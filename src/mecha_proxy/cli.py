@@ -253,7 +253,7 @@ def cmd_ai(args) -> int:
         print("AI tools removed (enhanced images kept)")
         return 0
     if not enhance.supported():
-        sys.exit("AI enhancement is Windows-only for now")
+        sys.exit(enhance.UNSUPPORTED_MSG)
     print(enhance.CREDITS_TEXT)
     last = [""]
 

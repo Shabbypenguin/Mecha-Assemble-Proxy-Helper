@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import stat
 import sys
 import zipfile
@@ -171,7 +172,7 @@ def test_install_verifies_checksums(tmp_path):
         z.writestr("onepiece_demo.mp4", b"not needed")
     data = buf.getvalue()
     sha = hashlib.sha256(data).hexdigest()
-    tools = enhance.Tools(tmp_path)
+    tools = enhance.Tools(tmp_path, engine=enhance.ENGINES["windows"])
     seen = []
     tools.install(["official"], session=_Sess({"u": data}), zip_url="u", zip_sha=sha,
                   on_progress=lambda *a: seen.append(a))
@@ -180,7 +181,7 @@ def test_install_verifies_checksums(tmp_path):
     assert "Kim2091" in (tools.dir / "THIRD-PARTY-LICENSES.txt").read_text()
     assert seen
 
-    bad = enhance.Tools(tmp_path / "bad")
+    bad = enhance.Tools(tmp_path / "bad", engine=enhance.ENGINES["windows"])
     with pytest.raises(enhance.EnhanceError, match="checksum"):
         bad.install(["official"], session=_Sess({"u": data}), zip_url="u", zip_sha="0" * 64)
     assert not bad.exe.exists()
@@ -191,3 +192,48 @@ def test_install_verifies_checksums(tmp_path):
     with pytest.raises(enhance.EnhanceError, match="checksum"):
         tools.install(["ultramix"], session=_Sess(routes), zip_url="u", zip_sha=sha)
     assert not tools.installed("ultramix")
+
+
+def test_platform_engines(monkeypatch):
+    import platform as pf
+    cases = [("win32", "AMD64", "windows"), ("darwin", "arm64", "macos"), ("darwin", "x86_64", "macos"),
+             ("linux", "x86_64", "linux"), ("linux", "aarch64", None), ("freebsd14", "amd64", None)]
+    for plat, machine, key in cases:
+        monkeypatch.setattr(sys, "platform", plat)
+        monkeypatch.setattr(pf, "machine", lambda m=machine: m)
+        assert enhance.platform_key() == key, (plat, machine)
+        assert enhance.supported() == (key is not None)
+    for key, eng in enhance.ENGINES.items():  # every pinned build: official release, fixed checksum
+        assert eng.url.startswith("https://github.com/xinntao/Real-ESRGAN/releases/download/")
+        assert len(eng.sha256) == 64 and eng.exe.endswith(".exe") == (key == "windows")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix permissions")
+def test_install_unix_engine_sets_exec_bit(tmp_path):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:  # like the real macOS/Ubuntu zips: no Unix permissions stored
+        z.writestr("realesrgan-ncnn-vulkan", b"#!/bin/sh\n")
+        z.writestr("models/realesr-animevideov3-x2.param", b"p")
+        z.writestr("models/realesr-animevideov3-x2.bin", b"b")
+        z.writestr("README_ubuntu.md", b"readme")
+        z.writestr("../evil", b"x")             # never extracted
+        z.writestr("sub/dir/other", b"x")       # nothing outside models/ subfolders either
+    data = buf.getvalue()
+    eng = enhance.Engine("u", hashlib.sha256(data).hexdigest(), 1, "realesrgan-ncnn-vulkan")
+    tools = enhance.Tools(tmp_path, engine=eng)
+    tools.install(["official"], session=_Sess({"u": data}))
+    assert tools.installed("official")
+    assert tools.exe.stat().st_mode & stat.S_IXUSR
+    assert not (tmp_path / "evil").exists() and not (tools.dir / "sub").exists()
+    assert not (tools.dir / "README_ubuntu.md").exists()
+    marker = json.loads(tools.marker.read_text())
+    assert marker["sha256"] == eng.sha256
+
+
+def test_missing_linux_library_message(lib, monkeypatch):
+    cache, card, src = lib
+    tools = install_fake_tools(cache.meta_dir)
+    tools.exe.write_text("#!/bin/sh\necho 'realesrgan-ncnn-vulkan: error while loading shared libraries: "
+                         "libvulkan.so.1: cannot open shared object file' >&2\nexit 127\n")
+    with pytest.raises(enhance.EnhanceError, match="libvulkan.so.1.*apt install"):
+        enhance.enhance_many(service.open_store(cache), tools, [(card, src)], "ultramix", False)

@@ -1,28 +1,42 @@
-# Release build: push a version tag (git tag v0.5.0 && git push origin v0.5.0).
-# Runs the tests, builds the Windows app with PyInstaller, zips it and attaches it to a
-# *draft* GitHub Release with auto-generated notes. Review the draft, then click Publish.
-# Only published releases are offered to users by the app's update check.
+# Release build: push a version tag (git tag v0.6.0 && git push origin v0.6.0).
+# Builds Windows and macOS (Apple Silicon + Intel), runs the tests and a start-up self-test on
+# each, then attaches all zips to ONE *draft* GitHub Release with generated notes. Review the
+# draft, then click Publish. Only published releases are offered by the app's update check.
+# Manual run (Actions tab or `gh workflow run release.yml`): builds and keeps the zips as
+# artifacts for 30 days, no release.
 name: Release
 
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:        # manual test run: builds and uploads the zip as an artifact only
+  workflow_dispatch:
 
 permissions:
-  contents: write           # create the draft release and upload the zip
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  QT_QPA_PLATFORM: offscreen   # GUI tests and the self-test run without a display
+  PYTHONUTF8: "1"
+
 jobs:
-  build-windows:
-    runs-on: windows-latest
-    timeout-minutes: 30
-    env:
-      QT_QPA_PLATFORM: offscreen   # GUI tests without a display
-      PYTHONUTF8: "1"
+  build:
+    name: build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows
+          - os: macos-latest        # Apple Silicon
+            label: macos-apple-silicon
+          - os: macos-15-intel      # GitHub offers Intel Macs until fall 2027
+            label: macos-intel
     steps:
       - uses: actions/checkout@v4
 
@@ -37,14 +51,14 @@ jobs:
 
       - name: Read version
         id: version
-        shell: pwsh
+        shell: bash
         run: |
-          $v = python -c "import mecha_proxy; print(mecha_proxy.__version__)"
-          "version=$v" >> $env:GITHUB_OUTPUT
-          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$v") {
-            Write-Error "Tag ${{ github.ref_name }} doesn't match __version__ $v (expected tag v$v)"
+          v=$(python -c "import mecha_proxy; print(mecha_proxy.__version__)")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" != "v$v" ]]; then
+            echo "::error::Tag ${{ github.ref_name }} doesn't match __version__ $v (expected tag v$v)"
             exit 1
-          }
+          fi
 
       - name: Test
         run: python -m pytest -q
@@ -52,29 +66,65 @@ jobs:
       - name: Build
         run: python -m PyInstaller packaging/mecha-proxy.spec --noconfirm --log-level WARN
 
-      - name: Zip
-        id: zip
+      - name: Self-test the built app (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $zip = "dist/Mecha-Assemble-Proxy-Helper-v${{ steps.version.outputs.version }}-windows.zip"
-          Compress-Archive -Path dist/Mecha-Assemble-Proxy-Helper -DestinationPath $zip -Force
-          "path=$zip" >> $env:GITHUB_OUTPUT
-          "{0:N1} MB" -f ((Get-Item $zip).Length / 1MB)
+          $home_dir = Join-Path $env:RUNNER_TEMP "smoke"
+          $p = Start-Process -FilePath "dist\Mecha-Assemble-Proxy-Helper\Mecha-Assemble-Proxy-Helper.exe" `
+                 -ArgumentList "--smoke-test", "--home", $home_dir -Wait -PassThru
+          Get-Content (Join-Path $home_dir "smoke-test.txt")
+          if ($p.ExitCode -ne 0) { Write-Error "self-test failed (exit $($p.ExitCode))"; exit 1 }
 
-      - name: Keep the build as an artifact
-        uses: actions/upload-artifact@v4
+      - name: Self-test the built app (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          home_dir="$RUNNER_TEMP/smoke"
+          "dist/Mecha-Assemble-Proxy-Helper.app/Contents/MacOS/Mecha-Assemble-Proxy-Helper" --smoke-test --home "$home_dir"
+          cat "$home_dir/smoke-test.txt"
+          grep -q "^ok " "$home_dir/smoke-test.txt"
+
+      - name: Zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/Mecha-Assemble-Proxy-Helper `
+            -DestinationPath "dist/Mecha-Assemble-Proxy-Helper-v${{ steps.version.outputs.version }}-windows.zip" -Force
+
+      - name: Zip (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |   # ditto keeps the bundle's symlinks and signatures intact
+          ditto -c -k --keepParent "dist/Mecha-Assemble-Proxy-Helper.app" \
+            "dist/Mecha-Assemble-Proxy-Helper-v${{ steps.version.outputs.version }}-${{ matrix.label }}.zip"
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: windows-app
-          path: ${{ steps.zip.outputs.path }}
+          name: ${{ matrix.label }}
+          path: dist/*.zip
           if-no-files-found: error
           retention-days: 30
 
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write           # create the draft release and upload the zips
+    steps:
+      - uses: actions/checkout@v4   # gh needs the repo context
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: zips
+          merge-multiple: true
+
       - name: Create draft release
-        if: github.ref_type == 'tag'
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" "${{ steps.zip.outputs.path }}" `
-            --draft --verify-tag --generate-notes `
-            --title "Mecha-Assemble-Proxy-Helper ${{ steps.version.outputs.version }}"
+          ls -l zips
+          gh release create "${{ github.ref_name }}" zips/*.zip \
+            --draft --verify-tag --generate-notes \
+            --title "Mecha-Assemble-Proxy-Helper ${GITHUB_REF_NAME#v}"

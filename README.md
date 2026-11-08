@@ -9,14 +9,24 @@ onto US Letter sheets, ready to print on cardstock at home, single- or double-si
 > Respect the publisher's data-use guidelines: don't share, sell, or redistribute
 > the images or the PDFs you generate.
 
-## Download (Windows)
+## Download
 
-Get the latest `Mecha-Assemble-Proxy-Helper-v<version>-windows.zip` from the
-[Releases page](https://github.com/Shabbypenguin/Mecha-Assemble-Proxy-Helper/releases), unzip it
-anywhere you can write to and run `Mecha-Assemble-Proxy-Helper.exe`. The app tells you when a new
-version is out (checked at most once a day; turn it off with *Cards → Check for new cards and app
-updates at startup*). To update, unzip the new version over the old folder: your cards and
-settings are kept.
+From the [Releases page](https://github.com/Shabbypenguin/Mecha-Assemble-Proxy-Helper/releases):
+
+- **Windows** – `…-windows.zip`. Unzip it anywhere you can write to and run
+  `Mecha-Assemble-Proxy-Helper.exe`. To update, unzip the new version over the old folder: your
+  cards and settings (kept next to the .exe) stay.
+- **macOS** (experimental, macOS 12+) – `…-macos-apple-silicon.zip` for M1/M2/M3/M4 Macs,
+  `…-macos-intel.zip` for older Intel Macs. Unzip and drag the app to Applications. The app
+  isn't signed by Apple, so the first launch is blocked: open **System Settings → Privacy &
+  Security**, scroll down and click **Open Anyway** (once). Or, in Terminal:
+  `xattr -dr com.apple.quarantine /Applications/Mecha-Assemble-Proxy-Helper.app`.
+  Cards and settings are kept in `Documents/Mecha-Assemble-Proxy-Helper`, so updating is just
+  replacing the app.
+- **Linux** – install from source (below).
+
+The app tells you when a new version is out (checked at most once a day; turn it off with
+*Cards → Check for new cards and app updates at startup*).
 
 ## Install from source (Windows, macOS, Linux)
 
@@ -110,16 +120,21 @@ room has a 50 mm bar to check the scale.
 - `--offline` builds using only already-downloaded images.
 - `mecha-proxy back --type unit -o back.png` exports the built-in back art.
 
-## AI enhancement (optional, Windows)
+## AI enhancement (optional)
 
 Bandai's unit images print at about 140 DPI, which looks soft on a 148 mm card. The app can
 make sharper copies on your own computer with an AI upscaler. It is **off until you turn it
 on** (Enhance → Enable AI enhancement…), and nothing is ever uploaded.
 
 - **What gets downloaded:** the official [Real-ESRGAN ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN)
-  release (~45 MB) and, for the default preset, the UltraMix Balanced model (~33 MB) from
-  Upscayl's repository. Each file is checked against a fixed SHA-256 before use. Nothing is
-  bundled with the app. Needs a graphics card with Vulkan support (most from the last ~8 years).
+  release for your system (~45–50 MB) and, for the default preset, the UltraMix Balanced model
+  (~33 MB) from Upscayl's repository. Each file is checked against a fixed SHA-256 before use.
+  Nothing is bundled with the app. Needs a graphics card with Vulkan support (most from the last
+  ~8 years; integrated Intel/AMD graphics work too, just slower).
+- **Systems:** Windows; macOS (Apple Silicon and Intel – experimental); Linux on x86_64 PCs,
+  with the Vulkan driver installed (Ubuntu/Debian:
+  `sudo apt install libvulkan1 libgomp1 mesa-vulkan-drivers`; check with `vulkaninfo --summary`).
+  Without a usable GPU the app says so instead of crashing.
 - **Where it goes:** sharper copies are saved in `cards-enhanced\<type>\<SET>\` as 4× lossless
   WebP. Your originals in `cards\` are never changed.
 - **Presets:** *Crisp graphics – UltraMix Balanced* (default) or *Official – Real-ESRGAN

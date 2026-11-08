@@ -206,7 +206,7 @@ class AiMixin:
         self.act_ai.setText("AI enhancement enabled" if enabled else "Enable AI enhancement…")
         self.act_ai.setEnabled(ok_platform or enabled)
         if not ok_platform:
-            self.act_ai.setToolTip("AI enhancement is Windows-only for now")
+            self.act_ai.setToolTip(enhance.UNSUPPORTED_MSG)
         preset = self.prefs.get("ai_preset", enhance.DEFAULT_PRESET)
         self.act_presets[preset].setChecked(True)
         types = set(self.prefs.get("ai_types", list(enhance.DEFAULT_TYPES)))
@@ -271,17 +271,21 @@ class AiMixin:
     def _ai_download_prompt(self, preset: str) -> bool:
         p = enhance.PRESETS[preset]
         need_engine = not self.tools.installed()
-        size = (enhance.ESR_ZIP_MB if need_engine else 0) + p.download_mb
+        engine_mb = self.tools.engine.mb
+        size = (engine_mb if need_engine else 0) + p.download_mb
+        gpu_note = ("a graphics card with Vulkan support is needed"
+                    + ("; on Linux also the Vulkan driver packages, e.g. <code>mesa-vulkan-drivers</code>"
+                       if enhance.platform_key() == "linux" else ""))
         e = html.escape
         text = (f"<b>Enable AI enhancement?</b><br><br>"
                 f"This downloads about <b>{size} MB</b> of free, third-party tools and runs them on "
-                f"<b>your own computer</b> (a graphics card with Vulkan support is needed). "
+                f"<b>your own computer</b> ({gpu_note}). "
                 f"Card images are never uploaded anywhere.<br><br>"
                 f"<b>What it does:</b> makes sharper copies of your cards in a separate "
                 f"<code>cards-enhanced</code> folder. Your original images are never changed.<br><br>"
                 f"<b>Downloads, each checked against a fixed checksum before use:</b><ul>"
                 + (f"<li>Real-ESRGAN ncnn-vulkan (official release by Xintao Wang, BSD-3) – "
-                   f"{enhance.ESR_ZIP_MB} MB</li>" if need_engine else "")
+                   f"{engine_mb} MB</li>" if need_engine else "")
                 + (f"<li>{e(p.label)} – {e(p.credit)} – {p.download_mb} MB</li>" if p.files else "")
                 + "</ul>Credits and licenses are listed in Help → About and saved with the tools.")
         r = QMessageBox.question(self, "AI enhancement", text, QMessageBox.Ok | QMessageBox.Cancel)

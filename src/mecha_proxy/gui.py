@@ -1081,7 +1081,11 @@ class MainWindow(AiMixin, QMainWindow):
         HoverPreview.get().hide()
         self._apply_images()
 
+    SMOKE_TEST = False  # set by --smoke-test: no prompts, no network
+
     def _first_run_prompt(self):
+        if self.SMOKE_TEST:
+            return
         if self.cache.load_manifest():
             return
         r = QMessageBox.question(self, APP_TITLE, "No cards downloaded yet.\n\n"
@@ -1280,6 +1284,8 @@ def main(argv: list[str] | None = None) -> int:
     if "--home" in argv:
         i = argv.index("--home")
         home = argv[i + 1] if i + 1 < len(argv) else None
+    if "--smoke-test" in argv:
+        return _smoke_test(home)
     app = QApplication.instance() or QApplication(argv)
     app.setApplicationName(APP_TITLE)
     app.setWindowIcon(app_icon())
@@ -1288,6 +1294,38 @@ def main(argv: list[str] | None = None) -> int:
     win.show()
     QTimer.singleShot(1500, win._auto_check)  # background check for new cards (at most daily)
     return app.exec()
+
+
+def _smoke_test(home: str | None) -> int:
+    """Packaged-build check (CI): open the main window headless, write smoke-test.txt, quit.
+
+    Run as:  <app> --smoke-test --home <empty folder>   (with QT_QPA_PLATFORM=offscreen)
+    A windowed .exe has no console, so the result goes to a file; exit code 0 = OK.
+    """
+    import platform
+    import traceback
+    out = Path(home or ".") / "smoke-test.txt"
+    try:
+        app = QApplication.instance() or QApplication([sys.argv[0]])
+        apply_theme(app)
+        MainWindow.SMOKE_TEST = True
+        win = MainWindow(home)
+        win.show()
+        for _ in range(5):
+            app.processEvents()
+        tabs = len(win.card_tabs)
+        win.close()
+        from . import enhance
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(f"ok {__version__} {sys.platform} {platform.machine()} tabs={tabs} "
+                       f"ai_engine={enhance.platform_key()}\n", encoding="utf-8")
+        return 0
+    except Exception:  # noqa: BLE001 - report anything that breaks startup
+        try:
+            out.write_text("FAILED\n" + traceback.format_exc(), encoding="utf-8")
+        except OSError:
+            pass
+        return 1
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Optional AI enhancement (Real-ESRGAN ncnn-vulkan), Windows only.
+"""Optional AI enhancement (Real-ESRGAN ncnn-vulkan) on Windows, macOS and Linux (x86_64).
 
 - Tools are downloaded only when the user enables enhancement, from pinned sources, and
   verified by SHA-256; anything that doesn't match is refused and never run.
@@ -14,7 +14,9 @@ import hashlib
 import io
 import json
 import os
+import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -33,10 +35,46 @@ from .cache import atomic_write, sha256_file
 Image.MAX_IMAGE_PIXELS = None  # 4x masters of our own cards are large but trusted
 
 # ---- pinned downloads ---------------------------------------------------------------
-ESR_ZIP_URL = ("https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/"
-               "realesrgan-ncnn-vulkan-20220424-windows.zip")
-ESR_ZIP_SHA256 = "abc02804e17982a3be33675e4d471e91ea374e65b70167abc09e31acb412802d"
-ESR_ZIP_MB = 45
+@dataclass(frozen=True)
+class Engine:
+    """One platform's official Real-ESRGAN ncnn-vulkan release."""
+    url: str
+    sha256: str
+    mb: int
+    exe: str                      # program name inside the zip and on disk
+
+
+_ESR = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-"
+ENGINES: dict[str, Engine] = {
+    "windows": Engine(_ESR + "windows.zip", "abc02804e17982a3be33675e4d471e91ea374e65b70167abc09e31acb412802d",
+                      45, "realesrgan-ncnn-vulkan.exe"),
+    # universal binary (Intel + Apple Silicon), MoltenVK built in
+    "macos": Engine(_ESR + "macos.zip", "e0ad05580abfeb25f8d8fb55aaf7bedf552c375b5b4d9bd3c8d59764d2cc333a",
+                    50, "realesrgan-ncnn-vulkan"),
+    # x86_64, glibc 2.29+ (Ubuntu 20.04+); needs libvulkan.so.1 and libgomp.so.1 from the system
+    "linux": Engine(_ESR + "ubuntu.zip", "e5aa6eb131234b87c0c51f82b89390f5e3e642b7b70f2b9bbe95b6a285a40c96",
+                    45, "realesrgan-ncnn-vulkan"),
+}
+
+
+def platform_key() -> str | None:
+    """Which engine build fits this computer, or None if there isn't one (e.g. Linux on ARM)."""
+    if sys.platform.startswith("win"):
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("linux") and platform.machine().lower() in ("x86_64", "amd64"):
+        return "linux"
+    return None
+
+
+def current_engine() -> Engine | None:
+    key = platform_key()
+    return ENGINES[key] if key else None
+
+
+# kept for callers/tests that refer to the Windows build directly
+ESR_ZIP_URL, ESR_ZIP_SHA256, ESR_ZIP_MB = ENGINES["windows"].url, ENGINES["windows"].sha256, ENGINES["windows"].mb
 UPSCAYL_MODELS = ("https://raw.githubusercontent.com/upscayl/upscayl/"
                   "a00d55fee90e0f9435d5eaa86e76700df8199af8/resources/models/")
 
@@ -113,14 +151,19 @@ LogFn = Callable[[str], None]
 
 
 def supported() -> bool:
-    return sys.platform.startswith("win")
+    return platform_key() is not None
+
+
+UNSUPPORTED_MSG = ("AI enhancement isn't available on this system (it needs Windows, macOS, or Linux on "
+                   "an x86_64 PC)")
 
 
 # ---- tools -----------------------------------------------------------------------
 class Tools:
-    def __init__(self, meta_dir: Path):
+    def __init__(self, meta_dir: Path, engine: Engine | None = None):
+        self.engine = engine or current_engine() or ENGINES["windows"]
         self.dir = Path(meta_dir) / "ai"
-        self.exe = self.dir / "realesrgan-ncnn-vulkan.exe"
+        self.exe = self.dir / self.engine.exe
         self.models = self.dir / "models"
         self.marker = self.dir / "installed.json"
 
@@ -135,8 +178,9 @@ class Tools:
 
     def install(self, presets: list[str], session: requests.Session | None = None,
                 on_progress: Callable[[str, int, int], None] | None = None,
-                zip_url: str = ESR_ZIP_URL, zip_sha: str = ESR_ZIP_SHA256) -> None:
+                zip_url: str | None = None, zip_sha: str | None = None) -> None:
         """Download + verify the engine and the requested presets' model files."""
+        zip_url, zip_sha = zip_url or self.engine.url, zip_sha or self.engine.sha256
         sess = session or requests.Session()
         sess.headers["User-Agent"] = config.USER_AGENT
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -148,10 +192,18 @@ class Tools:
             with zipfile.ZipFile(io.BytesIO(data)) as z:
                 for info in z.infolist():
                     name = info.filename
-                    if name.endswith((".exe", ".dll")) or (name.startswith("models/") and not name.endswith("/")):
+                    if "/" in name.rstrip("/").replace("models/", "", 1) or ".." in name:
+                        continue  # only top-level files and models/<file>; nothing that could escape
+                    wanted = (name == self.engine.exe or name.endswith(".dll")
+                              or (name.startswith("models/") and not name.endswith("/")))
+                    if wanted:
                         target = self.dir / name
                         target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_bytes(z.read(info))
+            if not self.exe.is_file():
+                raise EnhanceError("The Real-ESRGAN package didn't contain the expected program.")
+            if os.name != "nt":  # the zips don't record Unix permissions
+                self.exe.chmod(self.exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         for key in presets:
             for fname, url, sha in PRESETS[key].files:
                 dst = self.models / fname
@@ -163,8 +215,8 @@ class Tools:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 atomic_write(dst, data)
         (self.dir / "THIRD-PARTY-LICENSES.txt").write_text(CREDITS_TEXT, encoding="utf-8")
-        atomic_write(self.marker, json.dumps({"engine": zip_url, "sha256": zip_sha, "presets": presets,
-                                              "installed_at": _now()}, indent=1).encode())
+        atomic_write(self.marker, json.dumps({"engine": zip_url, "sha256": zip_sha, "platform": platform_key(),
+                                              "presets": presets, "installed_at": _now()}, indent=1).encode())
 
     def remove(self) -> None:
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -185,6 +237,11 @@ class Tools:
         err = (proc.stderr or "") + (proc.stdout or "")
         if proc.returncode != 0 or not dst.is_file():
             low = err.lower()
+            if "error while loading shared libraries" in low:  # Linux: a system library is missing
+                lib = err.split("libraries:", 1)[-1].split(":", 1)[0].strip() or "a system library"
+                raise EnhanceError(f"The AI tool needs {lib}, which isn't installed. On Ubuntu/Debian: "
+                                   "sudo apt install libvulkan1 libgomp1 mesa-vulkan-drivers "
+                                   "(other distributions have similar packages).")
             if "vkcreateinstance" in low or "invalid gpu" in low or "vulkan" in low or "gpu" in low and "failed" in low:
                 raise EnhanceError("AI enhancement needs a graphics card with Vulkan support, and none was "
                                    "found (or its driver is out of date). Updating your graphics driver may fix "

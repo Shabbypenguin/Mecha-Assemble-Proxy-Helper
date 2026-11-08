@@ -172,3 +172,20 @@ def test_latest_release():
     assert service.latest_release(_ApiSession(_ApiResp(403)), "0.5.0") is None  # rate limited
     assert service.latest_release(_ApiSession(_ApiResp(200, bad_json=True)), "0.5.0") is None
     assert service.latest_release(_ApiSession(exc=OSError("offline")), "0.5.0") is None
+
+
+# ---- 0.6: macOS app data location -------------------------------------------------------------
+def test_mac_app_keeps_data_in_documents(tmp_path, monkeypatch):
+    import sys
+
+    from mecha_proxy import paths
+    monkeypatch.delenv("MECHA_PROXY_HOME", raising=False)
+    monkeypatch.setattr(paths, "user_documents_dir", lambda: str(tmp_path / "Documents"))
+    app = tmp_path / "Mecha-Assemble-Proxy-Helper.app" / "Contents" / "MacOS"
+    app.mkdir(parents=True)  # writable, but inside the bundle: still not used
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(app / "Mecha-Assemble-Proxy-Helper"))
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert paths.app_home() == tmp_path / "Documents" / "Mecha-Assemble-Proxy-Helper"
+    monkeypatch.setattr(sys, "platform", "win32")  # Windows keeps the portable layout
+    assert paths.app_home() == app

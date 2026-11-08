@@ -7,10 +7,10 @@ Portable layout, next to the program:
 
 <home> is, in order of preference:
   1. --home on the command line, or the MECHA_PROXY_HOME environment variable
-  2. the folder containing the .exe (packaged builds), if it's writable
+  2. the folder containing the .exe (packaged Windows builds), if it's writable
   3. the project folder (running from a source checkout)
-  4. Documents/Mecha-Assemble-Proxy-Helper (installed into site-packages, which
-     is no place for user files)
+  4. Documents/Mecha-Assemble-Proxy-Helper (the macOS app – a .app bundle is no place for
+     user files – an unwritable install folder, or an install into site-packages)
 """
 from __future__ import annotations
 
@@ -31,6 +31,8 @@ def app_home(override: str | None = None) -> Path:
     if env:
         return Path(env).expanduser().resolve()
     if getattr(sys, "frozen", False):  # PyInstaller and friends
+        if sys.platform == "darwin":  # inside Foo.app/Contents/MacOS: may be read-only or moved by macOS
+            return Path(user_documents_dir()) / "Mecha-Assemble-Proxy-Helper"
         exe_dir = Path(sys.executable).resolve().parent
         if _writable(exe_dir):
             return exe_dir

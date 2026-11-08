@@ -1,0 +1,51 @@
+# Card images, tool data and generated sheets are never committed or redistributed.
+cards/
+cards-enhanced/
+.cache/
+output/
+*.pdf
+*.zip
+
+# Any images (card art, screenshots, test output) – the only image in the repo is
+# packaging/icon.ico, which these patterns don't touch.
+*.webp
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.avif
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Build (PyInstaller work folder, built app) and local build scripts
+build/
+dist/
+*.bat
+
+# Temporary / local
+*.part
+*.tmp
+*.log
+.env
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

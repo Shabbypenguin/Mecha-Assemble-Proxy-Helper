@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mecha-assemble-proxy-helper"
+dynamic = ["version"]
+description = "Lay out replacement cards for miniatures you own into printable PDF sheets."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+dependencies = [
+  "requests>=2.31",
+  "Pillow>=10.0",
+  "reportlab>=4.0",
+  "platformdirs>=4.0",
+]
+
+[project.optional-dependencies]
+gui = ["PySide6-Essentials>=6.7"]
+dev = ["pytest>=8", "pypdf>=4", "numpy>=1.26"]  # numpy: test measurements only
+
+[project.scripts]
+mecha-proxy = "mecha_proxy.cli:main"
+
+[project.gui-scripts]
+mecha-proxy-gui = "mecha_proxy.gui:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "mecha_proxy.__version__"}  # the one place to bump the version
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

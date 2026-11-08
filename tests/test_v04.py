@@ -1,0 +1,124 @@
+"""0.4: deck codes and Bandai card-change detection."""
+from __future__ import annotations
+
+from mecha_proxy import config, deckcode, scraper, service
+from mecha_proxy.cache import Cache
+
+from .test_core import FIX, FakeSession
+from .test_core import _png as webp
+
+UNIT = config.CARD_TYPES["unit"]
+KNOWN = {"st01-u01", "st01-u02", "st01-t01", "st01-t02", "ex01-r01a"}
+
+
+# ---- deck codes -----------------------------------------------------------------
+def parse(text):
+    r = deckcode.parse(text, KNOWN)
+    return r.cards
+
+
+def test_deck_code_formats_quantity_and_code_only():
+    assert deckcode.format_code([("st01-u02", 1), ("st01-t02", 2), ("st01-t01", 0)]) == "1x ST01-U02\n2x ST01-T02"
+
+
+def test_deck_code_reads_many_spellings():
+    for text in ("1xst01-u01", "1 x st01-u01", "1x ST01-U01", "st01u01", "ST01_U01", "st01 u01", "1× st01-u01",
+                 "ｓｔ０１－ｕ０１", "- st01-u01 Wing Gundam", "ST01-U01 x1"):
+        assert parse(text) == {"st01-u01": 1}, text
+    for text in ("2x st01u01", "2 st01-u01", "st01-u01 x2", "st01-u01x2", "ST01-U01 2x", "2 * st01-u01"):
+        assert parse(text) == {"st01-u01": 2}, text
+    assert parse("ex01-r01a") == {"ex01-r01a": 1} and parse("ex01-r01ax3") == {"ex01-r01a": 3}
+    assert parse("st01-t01 3x st01-u01") == {"st01-t01": 1, "st01-u01": 3}  # "3x" belongs to the next card
+    assert parse("1x st01-u01\n1x ST01-U01") == {"st01-u01": 2}  # repeats add up
+    assert parse("0x st01-u01") == {}
+    assert parse("999 st01-u01") == {"st01-u01": deckcode.MAX_QTY}
+
+
+def test_deck_code_ignores_noise_and_reports_unknown():
+    r = deckcode.parse("# my deck\n// notes\nhello there\n1x zz99-u99\nabst01-u01\n1x st01-t01\n\n", KNOWN)
+    assert r.cards == {"st01-t01": 1}
+    assert r.unknown == ["ZZ99-U99"]
+    assert r.ignored == 2  # "hello there" and "abst01-u01" (code glued to a word)
+    assert r.total == 1
+
+
+def test_deck_code_sanitises_input():
+    r = deckcode.parse("1x st01\x00-u01\x1b[31m​", KNOWN)  # control / zero-width characters
+    assert r.cards == {"st01-u01": 1}
+    big = deckcode.parse("st01-u01\n" * (deckcode.MAX_LINES + 50), KNOWN)
+    assert big.truncated and big.cards["st01-u01"] == deckcode.MAX_QTY
+    assert deckcode.parse("x" * (deckcode.MAX_CHARS + 10), KNOWN).truncated
+    assert deckcode.parse("", KNOWN).cards == {} and deckcode.parse(None, KNOWN).cards == {}
+
+
+# ---- Bandai changes -------------------------------------------------------------------
+def _site(hp_by_code=None, where="SAMPLE PACK 02"):
+    hp_by_code = hp_by_code or {}
+    modal = (FIX / "modal_unit.html").read_text()
+    routes = {config.SITE_BASE + UNIT.list_path: (FIX / "unitlist.html").read_text()}
+    for code in ("ex02-u03", "st01-u01", "ex01-u01"):
+        html = modal.replace('u-text--bold">12<', f'u-text--bold">{hp_by_code.get(code, 12)}<')
+        routes[scraper.modal_url(UNIT, code)] = html.replace("SAMPLE PACK 02", where)
+    for c in scraper.parse_card_list(routes[config.SITE_BASE + UNIT.list_path], UNIT, config.SITE_BASE):
+        routes[c.print_image] = webp()
+    return routes
+
+
+def _cache(tmp_path, routes):
+    return Cache(tmp_path, session=FakeSession(routes), delay_s=0, log=lambda *a: None)
+
+
+def test_detail_changes_are_flagged(tmp_path):
+    cache = _cache(tmp_path, _site())
+    cache.save_manifest(scraper.build_manifest(cache, ["unit"], log=lambda *a: None))
+    cache.session = FakeSession(_site(where="REPRINT PACK 09"))  # only "where to get it" changed
+    m = scraper.build_manifest(cache, ["unit"], log=lambda *a: None, refresh_details=True)
+    assert m["changes"] == {} and m["last_changed"] == []
+    cache.save_manifest(m)
+
+    cache.session = FakeSession(_site({"st01-u01": 13}))  # errata: HP 12 -> 13
+    logs = []
+    m = scraper.build_manifest(cache, ["unit"], log=logs.append, refresh_details=True)
+    assert m["last_changed"] == ["st01-u01"]
+    assert m["changes"]["st01-u01"]["fields"] == ["hp"]
+    assert next(c for c in m["cards"]["unit"] if c["code"] == "st01-u01")["details"]["hp"] == 13
+    assert any("ST01-U01 was updated by Bandai: HP" in s for s in logs)
+
+
+def test_site_layout_change_flags_nothing(tmp_path):
+    cache = _cache(tmp_path, _site())
+    cache.save_manifest(scraper.build_manifest(cache, ["unit"], log=lambda *a: None))
+    cache.session = FakeSession(_site({"ex02-u03": 1, "st01-u01": 1, "ex01-u01": 1}))  # every card "changed"
+    logs = []
+    m = scraper.build_manifest(cache, ["unit"], log=logs.append, refresh_details=True)
+    assert m["changes"] == {} and m["last_changed"] == []
+    assert all(c["details"]["hp"] == 12 for c in m["cards"]["unit"])  # old details kept
+    assert any("layout" in s for s in logs)
+
+
+def test_full_update_rechecks_only_changed_images(tmp_path, monkeypatch):
+    real = service.refresh_manifest
+    monkeypatch.setattr(service, "refresh_manifest",
+                        lambda cache, types, **kw: real(cache, ["unit"], **kw))  # test site has units only
+    cache = _cache(tmp_path, _site())
+    service.full_update(cache, log=lambda m: None)
+    cache.session = sess = FakeSession(_site({"st01-u01": 13}))
+    manifest, missing, changed = service.full_update(cache, log=lambda m: None)
+    assert changed == ["st01-u01"] and not missing
+    image_calls = [(u, h) for u, h in sess.calls if u.endswith(".webp")]
+    assert len(image_calls) == 1 and "st01-u01" in image_calls[0][0]
+    assert image_calls[0][1].get("If-None-Match")  # a cheap "has it changed?" request
+
+
+def test_print_history_and_changed_since_printed(tmp_path):
+    cache = Cache(tmp_path, delay_s=0, log=lambda *a: None)
+    assert service.load_printed(cache) == {}
+    service.record_printed(cache, ["st01-u01", "st01-t01"])
+    printed = service.load_printed(cache)
+    assert set(printed) == {"st01-u01", "st01-t01"}
+    later = "9999-01-01T00:00:00+00:00"
+    manifest = {"changes": {"st01-u01": {"date": later, "fields": ["hp"]},
+                            "st01-t01": {"date": "2000-01-01T00:00:00+00:00", "fields": ["effect"]},
+                            "st01-u02": {"date": later, "fields": ["hp"]}}}
+    # u01 changed after printing; t01 changed before it was printed; u02 was never printed
+    assert service.changed_since_printed(manifest, printed) == ["st01-u01"]

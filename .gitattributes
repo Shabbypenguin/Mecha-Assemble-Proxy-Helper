@@ -1,0 +1,5 @@
+# Normalise text files to LF in the repo (Git converts on checkout as configured)
+* text=auto
+
+# Binary
+*.ico binary

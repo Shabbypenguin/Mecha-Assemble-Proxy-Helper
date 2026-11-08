@@ -188,4 +188,4 @@ def test_mac_app_keeps_data_in_documents(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     assert paths.app_home() == tmp_path / "Documents" / "Mecha-Assemble-Proxy-Helper"
     monkeypatch.setattr(sys, "platform", "win32")  # Windows keeps the portable layout
-    assert paths.app_home() == app
+    assert paths.app_home() == app.resolve()

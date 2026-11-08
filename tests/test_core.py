@@ -460,6 +460,7 @@ def test_frozen_home_falls_back_when_not_writable(tmp_path, monkeypatch):
     exe_dir.mkdir()
     monkeypatch.setattr(_sys, "frozen", True, raising=False)
     monkeypatch.setattr(_sys, "executable", str(exe_dir / "app.exe"))
+    monkeypatch.setattr(_sys, "platform", "win32")  # the portable layout (macOS always uses Documents)
     assert paths.app_home() == exe_dir.resolve()
     monkeypatch.setattr(paths, "_writable", lambda folder: False)
     monkeypatch.setattr(paths, "user_documents_dir", lambda: str(tmp_path / "Docs"))

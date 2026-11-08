@@ -14,7 +14,9 @@ from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMessageBox, QSlide
 
 from . import config, enhance
 
-SECONDS_PER_CARD = {"ultramix": 3.0, "official": 1.0}  # rough GPU estimate for the prompts
+# Seconds per unit card: (gaming graphics card, built-in graphics). Measured: UltraMix on an
+# Intel UHD 770 (integrated) ~44 s/card; dedicated GPUs are roughly 10-15x faster.
+SECONDS_PER_CARD = {"ultramix": (3.0, 45.0), "official": (1.0, 12.0)}
 
 
 # ---- before/after compare -----------------------------------------------------------
@@ -241,9 +243,16 @@ class AiMixin:
         return items
 
     def _estimate(self, n: int) -> str:
-        secs = n * SECONDS_PER_CARD.get(self.prefs.get("ai_preset", "ultramix"), 3.0)
-        return f"about {max(1, round(secs / 60))} minute{'s' * (round(secs / 60) > 1)}" if secs >= 60 \
-            else f"about {max(5, round(secs))} seconds"
+        """Honest range, since speed depends hugely on the graphics chip."""
+        fast, slow = SECONDS_PER_CARD.get(self.prefs.get("ai_preset", "ultramix"), (3.0, 45.0))
+
+        def say(secs: float) -> str:
+            if secs < 60:
+                return f"{max(5, round(secs / 5) * 5)} seconds"
+            mins = round(secs / 60)
+            return f"{mins} minute{'s' * (mins != 1)}" if mins < 90 else f"{secs / 3600:.1f} hours"
+        return (f"about {say(n * fast)} with a gaming graphics card, up to {say(n * slow)} on built-in "
+                "graphics (you can cancel any time; finished cards are kept)")
 
     def _open_enhanced(self):
         from .gui import open_in_file_manager

@@ -275,8 +275,18 @@ def cmd_enhance(args) -> int:
     if not tools.installed(args.preset):
         sys.exit(f"AI tools for preset '{args.preset}' aren't installed: run 'mecha-proxy ai install "
                  f"--preset {args.preset}' first")
-    types = list(config.CARD_TYPES) if args.type == "all" else args.type.split(",")
-    manifest = _manifest(cache, types, offline=True)
+    types = list(config.CARD_TYPES) if args.type == "all" else [t.strip() for t in args.type.split(",")]
+    unknown = [t for t in types if t not in config.CARD_TYPES]
+    if unknown:
+        sys.exit(f"unknown card type(s): {', '.join(unknown)} (choose from {', '.join(config.CARD_TYPES)})")
+    manifest = cache.load_manifest() or {}
+    have = [t for t in types if manifest.get("cards", {}).get(t)]
+    if not have:
+        sys.exit("no saved card list yet (run 'mecha-proxy update' first)")
+    skipped_types = [t for t in types if t not in have]
+    if skipped_types:  # e.g. only units downloaded so far: enhance what's there
+        print(f"skipping {', '.join(skipped_types)}: not downloaded yet")
+    types = have
     items = []
     for t in types:
         for card in scraper.cards_from_manifest(manifest, t):

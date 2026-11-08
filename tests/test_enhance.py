@@ -237,3 +237,22 @@ def test_missing_linux_library_message(lib, monkeypatch):
                          "libvulkan.so.1: cannot open shared object file' >&2\nexit 127\n")
     with pytest.raises(enhance.EnhanceError, match="libvulkan.so.1.*apt install"):
         enhance.enhance_many(service.open_store(cache), tools, [(card, src)], "ultramix", False)
+
+
+def test_cli_enhance_skips_types_not_downloaded(lib, capsys):
+    """Only units downloaded (no 'other' list yet): the default --type unit,other still works."""
+    from dataclasses import asdict
+
+    from mecha_proxy import cli
+    cache, card, src = lib
+    install_fake_tools(cache.meta_dir)
+    cache.save_index()
+    cache.index[card.print_image] = {"file": card.image_relpath(card.print_image),
+                                     "sha256": hashlib.sha256(src.read_bytes()).hexdigest()}
+    cache.save_index()
+    cache.save_manifest({"cards": {"unit": [asdict(card)]}})
+    assert cli.main(["--home", str(cache.root), "enhance", "--cards", "st01-u01"]) == 0
+    out = capsys.readouterr().out
+    assert "skipping other: not downloaded yet" in out and "1 enhanced" in out
+    with pytest.raises(SystemExit, match="unknown card type"):
+        cli.main(["--home", str(cache.root), "enhance", "--type", "units"])

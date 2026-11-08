@@ -42,7 +42,8 @@ DEFAULT_PREFS = {"mode": "duplex", "flip": "long", "bleed": 0.0, "gap": 0.0, "of
                  "ai_enabled": False, "ai_preset": enhance.DEFAULT_PRESET, "ai_types": list(enhance.DEFAULT_TYPES),
                  "ai_auto": True, "ai_space_saving": False, "show_enhanced": False,
                  "small_pdf": False,
-                 "changes_ack": ""}  # newest Bandai card change the user has already looked at
+                 "changes_ack": "",
+                 "skip_app_version": ""}  # app update the user already opened (don't nag again)  # newest Bandai card change the user has already looked at
 CHECK_INTERVAL_S = 24 * 3600   # look for new cards on the site at most once a day
 BANNER_BG, BANNER_FG = "#2C52B3", "#FFFFFF"
 
@@ -487,11 +488,6 @@ class FilterPanel(QFrame):
         self.selected_only = QCheckBox("Show currently selected only")
         self.selected_only.toggled.connect(self.changed)
         lay.addWidget(self.selected_only)
-        self.updated_only = QCheckBox("Show cards updated by Bandai")
-        self.updated_only.setToolTip("Cards whose details (abilities, stats, effect text…) Bandai has changed "
-                                     "since the app first saw them – found by Cards → Update cards")
-        self.updated_only.toggled.connect(self.changed)
-        lay.addWidget(self.updated_only)
         lay.addStretch()
 
     def set_units(self, units: list[scraper.Card]):
@@ -521,7 +517,7 @@ class FilterPanel(QFrame):
             text=text)
 
     def reset(self):
-        widgets = [*self.boxes.values(), *self.ranges.values(), self.selected_only, self.updated_only]
+        widgets = [*self.boxes.values(), *self.ranges.values(), self.selected_only]
         for w in widgets:
             w.blockSignals(True)
         for b in self.boxes.values():
@@ -529,7 +525,6 @@ class FilterPanel(QFrame):
         for rb in self.ranges.values():
             rb.reset()
         self.selected_only.setChecked(False)
-        self.updated_only.setChecked(False)
         for w in widgets:
             w.blockSignals(False)
         self.reset_requested.emit()  # lets the tab clear its search box too
@@ -543,7 +538,7 @@ class CardTab(QWidget):
     def __init__(self, card_type: str, parent=None):
         super().__init__(parent)
         self.card_type = card_type
-        self.changes: dict[str, dict] = {}  # code -> Bandai change info, for the "updated" filter
+        self.changes: dict[str, dict] = {}  # code -> Bandai change info, for the ↻ Updated markers
         self.cards: list[scraper.Card] = []
         self.filters = FilterPanel(card_type)  # placed in the main window's left column
         lay = QVBoxLayout(self)
@@ -596,12 +591,9 @@ class CardTab(QWidget):
     def apply_filter(self):
         state = self.filters.state(self.search.text())
         sel_only = self.filters.selected_only.isChecked()
-        upd_only = self.filters.updated_only.isChecked()
 
         def pred(tile: CardTile) -> bool:
             if sel_only and not tile.selected:
-                return False
-            if upd_only and tile.card.code not in self.changes:
                 return False
             return filters.matches(tile.card, state, tile.haystack)
 
@@ -666,6 +658,7 @@ class MainWindow(AiMixin, QMainWindow):
         self.banner.clicked.connect(self._banner_clicked)
         outer.addWidget(self.banner)
         self._new_on_site: list[str] = []
+        self._app_update: tuple[str, str] | None = None  # (version, release page) if newer exists
         self._checker: Task | None = None
         body.addWidget(self._build_sidebar(), 0)
         self.tabs = QTabWidget()
@@ -707,6 +700,17 @@ class MainWindow(AiMixin, QMainWindow):
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         v.addWidget(self.summary)
+        lists = QHBoxLayout()  # deck lists: shared by every tab, like the selection summary
+        self.btn_import = QPushButton("Import list…")
+        self.btn_import.setToolTip("Select the cards from a deck list someone shared  (Ctrl+Shift+V)")
+        self.btn_import.clicked.connect(self.paste_deck_code)
+        self.btn_export = QPushButton("Export list")
+        self.btn_export.setToolTip("Copy the selected cards (all tabs) to the clipboard as a deck list "
+                                   "to share  (Ctrl+Shift+C)")
+        self.btn_export.clicked.connect(self.copy_deck_code)
+        lists.addWidget(self.btn_import)
+        lists.addWidget(self.btn_export)
+        v.addLayout(lists)
         self.btn_print = QPushButton("Start printing…")
         self.btn_print.setObjectName("accent")
         self.btn_print.setToolTip("Choose print settings with a preview, then save the PDF(s)  (Ctrl+P)")
@@ -733,15 +737,15 @@ class MainWindow(AiMixin, QMainWindow):
         self.act_cal = cards.addAction("&Calibration sheet…", lambda: self.run_calibration())
         self.act_cal.setStatusTip("A 2-page front/back alignment test for the current tab's card size")
         cards.addSeparator()
-        act = cards.addAction("&Copy deck code", self.copy_deck_code)
-        act.setShortcut(QKeySequence("Ctrl+Shift+C"))
-        act.setStatusTip("Copy the selected cards as text (e.g. \"1x ST01-U02\") to share")
-        act = cards.addAction("&Paste deck code…", self.paste_deck_code)
+        act = cards.addAction("&Import deck list…", self.paste_deck_code)
         act.setShortcut(QKeySequence("Ctrl+Shift+V"))
-        act.setStatusTip("Select the cards from a deck code someone shared")
+        act.setStatusTip("Select the cards from a deck list someone shared")
+        self.act_export = cards.addAction("&Export deck list", self.copy_deck_code)
+        self.act_export.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.act_export.setStatusTip("Copy the selected cards as text (e.g. \"1x ST01-U02\") to share")
         cards.addSeparator()
         cards.addAction("Check for &new cards now", lambda: self.check_site(manual=True))
-        self.act_auto = cards.addAction("Check for new cards at &startup")
+        self.act_auto = cards.addAction("Check for new cards and app updates at &startup")
         self.act_auto.setCheckable(True)
         self.act_auto.setChecked(bool(self.prefs.get("auto_check", True)))
         self.act_auto.setStatusTip("Once a day, look at the card lists on the site for new cards")
@@ -752,6 +756,9 @@ class MainWindow(AiMixin, QMainWindow):
         self._build_ai_menu(mb)
 
         help_menu = mb.addMenu("&Help")
+        help_menu.addAction("Check for app &updates", lambda: self.check_site(manual=True))
+        help_menu.addAction("Open &project page", lambda: __import__("webbrowser").open(config.REPO_URL))
+        help_menu.addSeparator()
         help_menu.addAction("&About", self._about)
 
     # -- "cards waiting" banner --
@@ -770,11 +777,29 @@ class MainWindow(AiMixin, QMainWindow):
     def _banner_clicked(self):
         if self._changed_printed():
             self.show_changed()
+        elif self._pending_app_update():
+            self.open_app_update()
         else:
             self.run_update()
 
+    def _pending_app_update(self) -> tuple[str, str] | None:
+        u = self._app_update
+        return u if u and u[0] != self.prefs.get("skip_app_version") else None
+
+    def open_app_update(self):
+        """Open the release page; the banner then stops mentioning this version."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        version, url = self._app_update
+        QDesktopServices.openUrl(QUrl(url))
+        self.prefs["skip_app_version"] = version
+        self._save_prefs()
+        self.status.setText(f"Opened the download page for version {version}. Download the zip and "
+                            "unzip it over this folder (your cards and settings are kept).")
+        self.refresh_banner()
+
     def show_changed(self):
-        """Banner click: filter every tab to updated cards and select the printed ones for reprinting."""
+        """Banner click: select the printed cards Bandai changed, ready for reprinting."""
         printed_changed = set(self._changed_printed())
         manifest = self.cache.load_manifest() or {}
         self.prefs["changes_ack"] = max((ch.get("date", "") for ch in manifest.get("changes", {}).values()),
@@ -784,10 +809,13 @@ class MainWindow(AiMixin, QMainWindow):
             for t in tab.grid.tiles:
                 if t.card.code in printed_changed:
                     t.set_selected(True)
-            tab.filters.updated_only.setChecked(True)
         for i, (t, tab) in enumerate(self.card_tabs.items()):
-            if any(c.code in printed_changed for c in tab.cards):
+            first = next((tile for tile in tab.grid.tiles if tile.card.code in printed_changed), None)
+            if first is not None:
                 self.tabs.setCurrentIndex(i)
+                if not first.isVisible():  # hidden by a filter: show everything so it can be seen
+                    tab.filters.reset()
+                tab.grid.ensureWidgetVisible(first)
                 break
         self.status.setText(f"{len(printed_changed)} updated card{'s' * (len(printed_changed) != 1)} you'd "
                             "printed before are selected – Start printing to make new copies")
@@ -800,6 +828,12 @@ class MainWindow(AiMixin, QMainWindow):
             labels = [c.upper() for c in changed[:3]]
             self.banner.setText(f"Bandai updated {n} card{'s' * (n != 1)} you've printed "
                                 f"({', '.join(labels)}{', …' if n > 3 else ''})  –  click to see {'them' if n > 1 else 'it'}")
+            self.banner.show()
+            return
+        update = self._pending_app_update()
+        if update:
+            self.banner.setText(f"Version {update[0]} of {APP_TITLE} is available (you have {__version__})"
+                                "  –  click to open the download page")
             self.banner.show()
             return
         missing = [c for c in self._all_cards() if self.images.get(c.code) is None]
@@ -838,16 +872,28 @@ class MainWindow(AiMixin, QMainWindow):
 
         def work(task: Task):
             from .cache import Cache
-            return service.new_on_site(Cache(root, log=lambda m: None), manifest)  # own session
+            cache = Cache(root, log=lambda m: None)  # own session
+            app_update = service.latest_release()   # never raises
+            try:
+                new = service.new_on_site(cache, manifest)
+            except Exception:  # noqa: BLE001 - still report an app update if the card site is down
+                if app_update is None:
+                    raise
+                new = []
+            return new, app_update
 
-        def done(new):
+        def done(result):
+            new, self._app_update = result
             self._new_on_site = new
             self.prefs["last_check"] = time.time()
             self._save_prefs()
             self.refresh_banner()
             if manual:
-                self.status.setText(f"{len(new)} new card{'s' * (len(new) != 1)} on the site" if new
-                                    else "You have every card on the site")
+                msg = (f"{len(new)} new card{'s' * (len(new) != 1)} on the site" if new
+                       else "You have every card on the site")
+                if self._app_update:
+                    msg += f" · version {self._app_update[0]} of the app is available"
+                self.status.setText(msg)
 
         def failed(msg):
             if manual:
@@ -875,7 +921,8 @@ class MainWindow(AiMixin, QMainWindow):
                           "Lays out replacement cards for miniatures you own onto printable sheets.<br><br>"
                           "Unofficial fan tool, not affiliated with the publisher. Card images are "
                           "downloaded from the publisher's site to your computer for personal use; "
-                          "please don't share or sell them.<br><br>License: GPL-3.0-or-later<br><br>"
+                          "please don't share or sell them.<br><br>License: GPL-3.0-or-later<br>"
+                          f"Source and downloads: <a href='{config.REPO_URL}'>{config.REPO}</a><br><br>"
                           "<b>Optional AI enhancement uses</b> (downloaded only if you enable it):<br>"
                           + enhance.CREDITS_HTML)
 
@@ -897,15 +944,24 @@ class MainWindow(AiMixin, QMainWindow):
     def copy_deck_code(self):
         sel = [(c.code, q) for t in self.card_tabs for c, q in self._selection(t)]
         if not sel:
-            self.status.setText("Nothing selected to copy")
+            self.status.setText("Nothing selected to export")
             return
-        QApplication.clipboard().setText(deckcode.format_code(sel))
+        text = deckcode.format_code(sel)
+        QApplication.clipboard().setText(text)
         n = sum(q for _, q in sel)
-        self.status.setText(f"Deck code copied ({n} card{'s' * (n != 1)}) – paste it anywhere to share")
+        self.status.setText(f"Deck list copied ({n} card{'s' * (n != 1)})")
+        lines = text.splitlines()
+        shown = "\n".join(lines[:15]) + (f"\n… and {len(lines) - 15} more" if len(lines) > 15 else "")
+        box = QMessageBox(QMessageBox.Information, "Deck list copied",
+                          f"<b>Copied {n} card{'s' * (n != 1)} to the clipboard.</b><br><br>"
+                          "Paste it anywhere – Discord, a message, a note – to share it. Others can load it "
+                          "with <b>Import list…</b>.", QMessageBox.Ok, self)
+        box.setInformativeText(f"<pre>{html.escape(shown)}</pre>")
+        box.exec()
 
     def paste_deck_code(self):
         known = {c.code for c in self._all_cards()}
-        dlg = PasteDeckDialog(self, known, QApplication.clipboard().text())
+        dlg = PasteDeckDialog(self, known)
         if dlg.exec() != PasteDeckDialog.Accepted or not dlg.result_cards:
             return
         self.apply_deck(dlg.result_cards)
@@ -921,7 +977,7 @@ class MainWindow(AiMixin, QMainWindow):
                     t.qty.blockSignals(False)
                 t.set_selected(bool(q))
         n = sum(cards.values())
-        self.status.setText(f"Selected {n} card{'s' * (n != 1)} from the deck code")
+        self.status.setText(f"Selected {n} card{'s' * (n != 1)} from the deck list")
         self._update_summary()
 
     def settings(self, card_type: str | None = None) -> service.PrintSettings:
@@ -950,6 +1006,9 @@ class MainWindow(AiMixin, QMainWindow):
                              else "Nothing selected yet")
         self.btn_print.setEnabled(total > 0 and self.task is None)
         self.act_print.setEnabled(total > 0 and self.task is None)
+        self.btn_export.setEnabled(total > 0 and self.task is None)
+        self.act_export.setEnabled(total > 0 and self.task is None)
+        self.btn_import.setEnabled(self.task is None)
 
     # -- prefs --
     def _load_prefs(self) -> dict:
@@ -977,9 +1036,6 @@ class MainWindow(AiMixin, QMainWindow):
             tab.set_cards(cards)
             for tile in tab.grid.tiles:
                 tile.set_changed(tab.changes.get(tile.card.code))
-            n_upd = len(tab.changes)
-            tab.filters.updated_only.setText(f"Show cards updated by Bandai ({n_upd})")
-            tab.filters.updated_only.setEnabled(bool(n_upd) or tab.filters.updated_only.isChecked())
             self.images.update({c.code: service.local_image(self.cache, c) for c in cards})
             tab.apply_filter()
             self.tabs.setTabText(i, f"{config.CARD_TYPES[t].label} ({len(cards)})")
@@ -1043,7 +1099,8 @@ class MainWindow(AiMixin, QMainWindow):
         self.task.finished_ok.connect(on_done)
         self.task.failed.connect(self._on_failed)
         self.task.finished.connect(self._on_task_end)
-        for b in (self.act_update, self.act_print, self.act_cal, self.btn_print, self.menu_ai):
+        for b in (self.act_update, self.act_print, self.act_cal, self.btn_print, self.menu_ai,
+                  self.btn_import, self.btn_export, self.act_export):
             b.setEnabled(False)
         self.tabs.setEnabled(False)
         self.filter_stack.setEnabled(False)

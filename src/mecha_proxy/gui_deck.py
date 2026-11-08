@@ -1,4 +1,4 @@
-"""Paste-a-deck-code dialog."""
+"""Import-a-deck-list dialog."""
 from __future__ import annotations
 
 import html
@@ -12,28 +12,24 @@ EXAMPLE = "1x ST01-U02\n1x ST01-T02\n2x EX01-T05"
 
 
 class PasteDeckDialog(QDialog):
-    """Text box (pre-filled from the clipboard when it holds a deck) with a live summary.
+    """Empty text box (every time it opens) with a live summary of what it found.
 
     "Select these cards" replaces the current selection with the deck.
     """
 
-    def __init__(self, parent, known: set[str], clipboard: str = ""):
+    def __init__(self, parent, known: set[str]):
         super().__init__(parent)
-        self.setWindowTitle("Paste deck code")
+        self.setWindowTitle("Import deck list")
         self.resize(460, 420)
         self.known = known
         self.result_cards: dict[str, int] = {}
         v = QVBoxLayout(self)
-        intro = QLabel("Paste a deck code – one card per line, like <code>1x ST01-U02</code>. "
+        intro = QLabel("Paste a deck list – one card per line, like <code>1x ST01-U02</code>. "
                        "Card names, extra text and missing quantities are fine.")
         intro.setWordWrap(True)
         v.addWidget(intro)
         self.text = QPlainTextEdit()
         self.text.setPlaceholderText(EXAMPLE)
-        if clipboard:  # pre-fill only when the clipboard actually holds card codes
-            found = deckcode.parse(clipboard, known)
-            if found.cards or found.unknown:
-                self.text.setPlainText(clipboard[:deckcode.MAX_CHARS])
         v.addWidget(self.text, 1)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
@@ -48,6 +44,7 @@ class PasteDeckDialog(QDialog):
         v.addWidget(self.buttons)
         self.text.textChanged.connect(self._update)
         self._update()
+        self.text.setFocus()  # ready for Ctrl+V
 
     def _update(self):
         res = deckcode.parse(self.text.toPlainText(), self.known)

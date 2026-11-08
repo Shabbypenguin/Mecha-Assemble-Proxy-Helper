@@ -13,6 +13,11 @@ SITE_BASE = "https://global.bandai-hobby.net/en-us/site/gundam-assemble/"
 # The site's CDN rejects non-browser user agents outright (even robots.txt), so we
 # use a browser-style string that still names this tool honestly.
 USER_AGENT = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Mecha-Assemble-Proxy-Helper/{__version__}"
+# Where the app itself is published (update check, About box)
+REPO = "Shabbypenguin/Mecha-Assemble-Proxy-Helper"
+REPO_URL = f"https://github.com/{REPO}"
+RELEASES_URL = f"{REPO_URL}/releases"
+LATEST_RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"  # skips drafts/pre-releases
 REQUEST_DELAY_S = 0.5  # politeness delay between network requests
 TIMEOUT_S = 30
 

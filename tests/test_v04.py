@@ -122,3 +122,53 @@ def test_print_history_and_changed_since_printed(tmp_path):
                             "st01-u02": {"date": later, "fields": ["hp"]}}}
     # u01 changed after printing; t01 changed before it was printed; u02 was never printed
     assert service.changed_since_printed(manifest, printed) == ["st01-u01"]
+
+
+# ---- 0.5: app update check ---------------------------------------------------------------
+class _ApiResp:
+    def __init__(self, status, data=None, bad_json=False):
+        self.status_code, self._data, self._bad = status, data, bad_json
+
+    def json(self):
+        if self._bad:
+            raise ValueError("not json")
+        return self._data
+
+
+class _ApiSession:
+    def __init__(self, resp=None, exc=None):
+        self.resp, self.exc, self.calls = resp, exc, []
+
+    def get(self, url, timeout=None, headers=None):
+        self.calls.append((url, headers))
+        if self.exc:
+            raise self.exc
+        return self.resp
+
+
+def test_parse_version():
+    assert service.parse_version("v0.10.2") == (0, 10, 2) > service.parse_version("0.9.9")
+    assert service.parse_version("1.0") == (1, 0)
+    for bad in ("", "v1.0-beta", "latest", "1..2"):
+        assert service.parse_version(bad) is None
+
+
+def test_latest_release():
+    rel = {"tag_name": "v0.6.0", "html_url": config.RELEASES_URL + "/tag/v0.6.0", "draft": False,
+           "prerelease": False}
+    sess = _ApiSession(_ApiResp(200, rel))
+    assert service.latest_release(sess, current="0.5.0") == ("0.6.0", config.RELEASES_URL + "/tag/v0.6.0")
+    assert sess.calls[0][0] == config.LATEST_RELEASE_API
+    assert "@" not in str(sess.calls[0][1])  # no personal details sent
+    assert service.latest_release(sess, current="0.6.0") is None   # same version
+    assert service.latest_release(sess, current="0.10.0") is None  # 0.10 > 0.6, not string order
+    assert service.latest_release(_ApiSession(_ApiResp(200, {**rel, "prerelease": True})), "0.5.0") is None
+    assert service.latest_release(_ApiSession(_ApiResp(200, {**rel, "tag_name": "nightly"})), "0.5.0") is None
+    # a link anywhere but our own repo is replaced with the releases page
+    odd = _ApiSession(_ApiResp(200, {**rel, "html_url": "https://evil.example/download"}))
+    assert service.latest_release(odd, "0.5.0") == ("0.6.0", config.RELEASES_URL)
+    # failures are silent
+    assert service.latest_release(_ApiSession(_ApiResp(404)), "0.5.0") is None
+    assert service.latest_release(_ApiSession(_ApiResp(403)), "0.5.0") is None  # rate limited
+    assert service.latest_release(_ApiSession(_ApiResp(200, bad_json=True)), "0.5.0") is None
+    assert service.latest_release(_ApiSession(exc=OSError("offline")), "0.5.0") is None

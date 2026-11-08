@@ -40,6 +40,7 @@ def app():
 def home(tmp_path, monkeypatch):
     """A library with 3 unit cards (2 downloaded) and 2 tactics cards, with details."""
     monkeypatch.setattr(gui.QMessageBox, "question", lambda *a, **k: gui.QMessageBox.No)
+    monkeypatch.setattr(gui.service, "latest_release", lambda *a, **k: None)  # no GitHub calls in tests
     cache = Cache(tmp_path, delay_s=0, log=lambda *a: None)
     cards = {"unit": [], "tactics": [], "other": []}
     for t, codes, size in [("unit", ["st01-u01", "st01-u02", "ex01-u01"], (800, 567)),
@@ -368,35 +369,40 @@ def test_no_stray_windows_at_startup(app, home):
     w.close()
 
 
-def test_deck_code_copy_and_paste(app, home, monkeypatch):
+def test_deck_list_import_export(app, home, monkeypatch):
     from mecha_proxy import gui_deck
 
+    shown = []
+    monkeypatch.setattr(gui.QMessageBox, "exec", lambda box: shown.append(box) or 0)
     w = gui.MainWindow(str(home))
+    assert not w.btn_export.isEnabled() and w.btn_import.isEnabled()  # nothing selected yet
     tiles = {t.card.code: t for tab in w.card_tabs.values() for t in tab.grid.tiles}
     tiles["st01-u02"].qty.setValue(2)
     tiles["st01-t01"].set_selected(True)
-    w.copy_deck_code()
+    assert w.btn_export.isEnabled()
+    w.btn_export.click()  # same button on every tab: exports all tabs
     assert QApplication.clipboard().text() == "2x ST01-U02\n1x ST01-T01"
+    assert shown and "Copied 3 cards to the clipboard" in shown[0].text()
+    assert "2x ST01-U02" in shown[0].informativeText()
 
-    # someone shares a sloppy code; pasting replaces the whole selection
-    shared = "my deck:\n1xst01-u01\nst01t02 x3\n1 x ZZ99-U99"
-    QApplication.clipboard().setText(shared)
+    # import: the box opens empty every time, even with a deck on the clipboard
     dialogs = []
+    sloppy = "my deck:\n1xst01-u01\nst01t02 x3\n1 x ZZ99-U99"
 
     def fake_exec(dlg):
         dialogs.append(dlg)
+        assert dlg.text.toPlainText() == ""
+        dlg.text.setPlainText(sloppy)  # what the user pastes
         return gui_deck.PasteDeckDialog.Accepted
     monkeypatch.setattr(gui_deck.PasteDeckDialog, "exec", fake_exec)
-    w.paste_deck_code()
+    w.btn_import.click()
     dlg = dialogs[0]
-    assert dlg.text.toPlainText() == shared  # pre-filled from the clipboard
+    assert dlg.windowTitle() == "Import deck list"
     assert "4 cards" in dlg.summary.text() and "ZZ99-U99" in dlg.summary.text()
     sel = {c.code: q for t in w.card_tabs for c, q in w._selection(t)}
     assert sel == {"st01-u01": 1, "st01-t02": 3}  # old picks (st01-u02, st01-t01) replaced
-
-    QApplication.clipboard().setText("just some chat text")
-    w.paste_deck_code()
-    assert dialogs[-1].text.toPlainText() == "" and not dialogs[-1].ok.isEnabled()
+    w.paste_deck_code()  # second opening: empty again (checked in fake_exec)
+    assert len(dialogs) == 2
     w.close()
 
 
@@ -417,16 +423,33 @@ def test_bandai_updates_banner_and_filter(app, home):
     assert tiles["st01-u01"].updated.isVisibleTo(tiles["st01-u01"])
     assert "HP, abilities" in tiles["st01-u01"].updated.toolTip()
     assert not tiles["ex01-u01"].updated.isVisibleTo(tiles["ex01-u01"])
-    assert unit.filters.updated_only.text().endswith("(2)")
-    assert not w.card_tabs["tactics"].filters.updated_only.isEnabled()  # nothing updated there
 
     # only the printed card that changed is in the banner
     assert w.banner.isVisibleTo(w) and "1 card you've printed (ST01-U01)" in w.banner.text()
     w._banner_clicked()
-    assert [t.card.code for t in unit.grid.visible_tiles()] == ["st01-u01", "st01-u02"]
+    assert w.current_type == "unit"
     assert {c.code for c, _ in w._selection("unit")} == {"st01-u01"}  # ready to reprint
     assert "printed" not in w.banner.text()  # looked at -> banner moves on
     w.close()
     w2 = gui.MainWindow(str(home))
     assert "printed" not in w2.banner.text()  # stays dismissed after a restart
     w2.close()
+
+
+def test_app_update_banner(app, home, monkeypatch):
+    from PySide6.QtGui import QDesktopServices
+
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    w = gui.MainWindow(str(home))
+    w._app_update = ("9.9.9", "https://github.com/Shabbypenguin/Mecha-Assemble-Proxy-Helper/releases/tag/v9.9.9")
+    w.refresh_banner()
+    assert w.banner.isVisibleTo(w) and "Version 9.9.9" in w.banner.text()
+    w._banner_clicked()
+    assert opened == [w._app_update[1]]
+    assert w.prefs["skip_app_version"] == "9.9.9"
+    assert "9.9.9" not in w.banner.text()  # not nagged again for this version
+    w._app_update = ("10.0.0", "https://github.com/Shabbypenguin/Mecha-Assemble-Proxy-Helper/releases/tag/v10.0.0")
+    w.refresh_banner()
+    assert "Version 10.0.0" in w.banner.text()  # a newer one is announced again
+    w.close()

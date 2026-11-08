@@ -115,6 +115,44 @@ def new_on_site(cache: Cache, manifest: dict | None, log: LogFn = lambda m: None
     return new
 
 
+# ---- app updates ---------------------------------------------------------------------
+def parse_version(text: str) -> tuple[int, ...] | None:
+    """"v0.10.2" -> (0, 10, 2); None if it isn't a plain dotted version."""
+    parts = text.strip().lstrip("vV").split(".")
+    if not parts or not all(p.isdigit() for p in parts):
+        return None
+    return tuple(int(p) for p in parts)
+
+
+def latest_release(session=None, current: str | None = None) -> tuple[str, str] | None:
+    """(version, page URL) of the newest published GitHub release if it's newer than this app.
+
+    Drafts and pre-releases are never offered. Any network/API problem returns None: the
+    update check must never get in the way of using the app.
+    """
+    import requests
+
+    from . import __version__
+    sess = session or requests.Session()
+    try:
+        resp = sess.get(config.LATEST_RELEASE_API, timeout=config.TIMEOUT_S,
+                        headers={"Accept": "application/vnd.github+json",
+                                 "User-Agent": f"Mecha-Assemble-Proxy-Helper/{__version__}"})
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+    except Exception:  # noqa: BLE001 - offline, rate limited, bad JSON… all mean "no news"
+        return None
+    tag = str(data.get("tag_name", ""))
+    latest, mine = parse_version(tag), parse_version(current or __version__)
+    if latest is None or mine is None or latest <= mine or data.get("draft") or data.get("prerelease"):
+        return None
+    url = str(data.get("html_url") or "")
+    if not url.startswith(config.REPO_URL + "/"):  # only ever link to our own repo
+        url = config.RELEASES_URL
+    return tag.lstrip("vV"), url
+
+
 def card_urls(card: scraper.Card) -> list[str]:
     return [card.print_image] + ([card.list_image] if card.list_image != card.print_image else [])
 

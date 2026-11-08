@@ -1,0 +1,80 @@
+# Release build: push a version tag (git tag v0.5.0 && git push origin v0.5.0).
+# Runs the tests, builds the Windows app with PyInstaller, zips it and attaches it to a
+# *draft* GitHub Release with auto-generated notes. Review the draft, then click Publish.
+# Only published releases are offered to users by the app's update check.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:        # manual test run: builds and uploads the zip as an artifact only
+
+permissions:
+  contents: write           # create the draft release and upload the zip
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen   # GUI tests without a display
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: python -m pip install --disable-pip-version-check -e ".[dev,gui]" pyinstaller
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $v = python -c "import mecha_proxy; print(mecha_proxy.__version__)"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$v") {
+            Write-Error "Tag ${{ github.ref_name }} doesn't match __version__ $v (expected tag v$v)"
+            exit 1
+          }
+
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Build
+        run: python -m PyInstaller packaging/mecha-proxy.spec --noconfirm --log-level WARN
+
+      - name: Zip
+        id: zip
+        shell: pwsh
+        run: |
+          $zip = "dist/Mecha-Assemble-Proxy-Helper-v${{ steps.version.outputs.version }}-windows.zip"
+          Compress-Archive -Path dist/Mecha-Assemble-Proxy-Helper -DestinationPath $zip -Force
+          "path=$zip" >> $env:GITHUB_OUTPUT
+          "{0:N1} MB" -f ((Get-Item $zip).Length / 1MB)
+
+      - name: Keep the build as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-app
+          path: ${{ steps.zip.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create draft release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" "${{ steps.zip.outputs.path }}" `
+            --draft --verify-tag --generate-notes `
+            --title "Mecha-Assemble-Proxy-Helper ${{ steps.version.outputs.version }}"

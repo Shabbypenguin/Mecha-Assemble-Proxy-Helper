@@ -9,7 +9,16 @@ onto US Letter sheets, ready to print on cardstock at home, single- or double-si
 > Respect the publisher's data-use guidelines: don't share, sell, or redistribute
 > the images or the PDFs you generate.
 
-## Install (Windows, macOS, Linux)
+## Download (Windows)
+
+Get the latest `Mecha-Assemble-Proxy-Helper-v<version>-windows.zip` from the
+[Releases page](https://github.com/Shabbypenguin/Mecha-Assemble-Proxy-Helper/releases), unzip it
+anywhere you can write to and run `Mecha-Assemble-Proxy-Helper.exe`. The app tells you when a new
+version is out (checked at most once a day; turn it off with *Cards → Check for new cards and app
+updates at startup*). To update, unzip the new version over the old folder: your cards and
+settings are kept.
+
+## Install from source (Windows, macOS, Linux)
 
 Requires Python 3.10+.
 
@@ -39,11 +48,12 @@ python -m pip install -e ".[gui]" && mecha-proxy-gui
   new cards. Settings are remembered between runs.
 - **Cards Bandai changed** (errata): a full update compares every card's details with the
   saved ones. Changed cards get an **↻ Updated** marker (hover it to see what changed), their
-  image is re-checked, and "Show cards updated by Bandai" lists them. If a changed card is one
-  you've printed before, a banner offers to select those cards for reprinting.
-- **Deck codes**: *Cards → Copy deck code* puts the selection on the clipboard as plain text,
-  one `1x ST01-U02` line per card, ready to paste into Discord. *Paste deck code…* selects
-  the cards from a shared code (replacing the current selection). It reads loose spellings
+  image is re-checked. If a changed card is one you've printed before, a banner offers to select
+  those cards for reprinting.
+- **Deck lists**: **Export list** (above Start printing, or *Cards → Export deck list*) copies
+  the selected cards from every tab to the clipboard as plain text, one `1x ST01-U02` line per
+  card, ready to paste into Discord. **Import list…** opens a box to paste a shared list into;
+  it replaces the current selection. It reads loose spellings
   too: `1xst01-u01`, `2 x ST01-T01`, `st01t01` (one copy), `ST01-U01 x2`, extra text and names.
 - **Enhance** menu: optional AI enhancement (see below).
 
@@ -153,7 +163,8 @@ Mecha-Assemble-Proxy-Helper/
   .cache/                     card list, download index, resized copies (safe to delete)
 ```
 
-- Images are downloaded **once**. `update` only fetches cards that are new.
+- Images are downloaded **once**. `update` only fetches cards that are new; the desktop
+  app's *Update cards* also re-reads every card's details to spot changed cards.
 - `update --refresh` re-checks existing images with the server using conditional
   requests: unchanged images are not downloaded again.
 - A card renamed on the site has its file moved, not re-downloaded.
@@ -173,11 +184,6 @@ Mecha-Assemble-Proxy-Helper/
 
 Sizes will be updated once confirmed with a ruler. Until then, use `--size` if yours differ.
 
-## Roadmap
-
-- A4 paper
-- MakePlayingCards export
-
 ## Building the Windows app
 
 Released zips are on the Releases page. To build one yourself (Windows, Python 3.10+), from the
@@ -191,8 +197,14 @@ The app is built in `dist\Mecha-Assemble-Proxy-Helper\`; zip that folder to shar
 `MECHA_PROXY_WITH_CLI=1` before building to also include the command-line tool
 (`mecha-proxy.exe`).
 
-To release a new version, change `__version__` in `src\mecha_proxy\__init__.py`; everything else
-(package metadata, the About box, the release name) follows it.
+### Releasing
+
+1. Change `__version__` in `src\mecha_proxy\__init__.py` (everything else – package metadata,
+   the About box, the zip name – follows it) and commit.
+2. Tag and push: `git tag v0.5.0 && git push origin main v0.5.0`
+3. GitHub Actions runs the tests, builds the app and attaches the zip to a **draft** release
+   with generated notes. Check it, then click **Publish** – only published releases are offered
+   by the app's update check. A tag that doesn't match `__version__` fails the build.
 
 The zip holds `Mecha-Assemble-Proxy-Helper.exe` and its `_internal` folder (bundled Python, Qt and
 libraries); keep them together.

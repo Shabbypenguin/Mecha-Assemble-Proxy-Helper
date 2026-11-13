@@ -1,0 +1,104 @@
+# Weekly check that Bandai's site still parses (card lists, card details, images, scenarios).
+# On failure it opens ONE issue labelled "site-check" (you close it by hand). While that issue is
+# open, a new comment is added only when the failure changes, and once when checks pass again.
+# Manual run: Actions tab -> Site check -> Run workflow, or `gh workflow run site-check.yml`.
+# Note: GitHub pauses scheduled workflows after 60 days without repo activity (it emails first).
+name: Site check
+
+on:
+  schedule:
+    - cron: "17 14 * * 1"   # Mondays 14:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  actions: read             # to fetch last good run's counts
+
+concurrency:
+  group: site-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install .
+
+      - name: Get counts from the last good check
+        run: |
+          id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow site-check.yml --status success \
+                 --limit 1 --json databaseId -q '.[0].databaseId')
+          if [ -n "$id" ]; then
+            gh run download "$id" --repo "$GITHUB_REPOSITORY" -n site-counts -D baseline \
+              || echo "no counts saved by run $id"
+          else
+            echo "no earlier good check: counts will be recorded this time"
+          fi
+
+      - name: Check the site
+        run: |
+          check() {
+            mecha-proxy --home "$RUNNER_TEMP/home" site-check \
+              --baseline baseline/counts.json --save-counts counts.json --report report.md
+          }
+          if ! check; then
+            echo "::warning::First attempt failed; retrying in 10 minutes in case Bandai's site was briefly down"
+            sleep 600
+            check
+          fi
+
+      - name: Save counts for next week
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-counts
+          path: counts.json
+          retention-days: 90
+
+      - name: Note recovery on the open issue
+        if: success()
+        continue-on-error: true
+        run: |
+          n=$(gh issue list --repo "$GITHUB_REPOSITORY" --label site-check --state open --limit 1 \
+                --json number -q '.[0].number')
+          [ -z "$n" ] && exit 0
+          last=$(gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json body,comments \
+                   -q '(.comments | last | .body) // .body')
+          case "$last" in *"site-check:ok"*) exit 0 ;; esac
+          printf '%s\nRun: %s\n\nYou can close this issue.\n' "$(cat report.md)" "$RUN_URL" > comment.md
+          gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+
+      - name: Open or update the site-check issue
+        if: failure()
+        run: |
+          if [ ! -s report.md ]; then
+            printf '## Bandai site check failed\n\nThe workflow failed before the check finished. See the run log.\n\n<!-- site-check:setup -->\n' > report.md
+          fi
+          printf '%s\nRun: %s\n' "$(cat report.md)" "$RUN_URL" > body.md
+          mark=$(grep -o 'site-check:[a-z0-9]*' report.md | head -1)
+          n=$(gh issue list --repo "$GITHUB_REPOSITORY" --label site-check --state open --limit 1 \
+                --json number -q '.[0].number')
+          if [ -z "$n" ]; then
+            gh label create site-check --repo "$GITHUB_REPOSITORY" --color B60205 \
+              --description "Weekly Bandai site check" 2>/dev/null || true
+            gh issue create --repo "$GITHUB_REPOSITORY" --label site-check \
+              --title "Site check failed: Bandai's site may have changed" --body-file body.md
+            exit 0
+          fi
+          last=$(gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json body,comments \
+                   -q '(.comments | last | .body) // .body')
+          case "$last" in
+            *"$mark"*) echo "Same failure as already reported on #$n" ;;
+            *) gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body-file body.md ;;
+          esac

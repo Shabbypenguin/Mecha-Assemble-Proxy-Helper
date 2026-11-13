@@ -347,6 +347,23 @@ def cmd_enhance(args) -> int:
     return 0 if not failed else 1
 
 
+def cmd_site_check(args) -> int:
+    from . import sitecheck
+    cache = _open_cache(args)
+    baseline = sitecheck.load_baseline(Path(args.baseline) if args.baseline else None)
+    result = sitecheck.run(cache, baseline, log=print)
+    for problem in result.problems:
+        print("PROBLEM:", problem)
+    if args.report:
+        Path(args.report).write_text(sitecheck.report(result), encoding="utf-8")
+    if args.save_counts and result.ok:  # only a good check becomes the next baseline
+        sitecheck.save_counts(result, Path(args.save_counts))
+    counts = ", ".join(f"{k} {v}" for k, v in result.counts.items())
+    print(("site check passed" if result.ok else f"site check failed: {len(result.problems)} problem(s)")
+          + (f" ({counts})" if counts else ""))
+    return 0 if result.ok else 1
+
+
 def cmd_gui(args) -> int:
     try:
         from . import gui
@@ -395,6 +412,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="store as JPEG 95%% at 400 DPI print size instead of the full lossless output")
     en.add_argument("--force", action="store_true", help="redo cards that are already enhanced")
     en.set_defaults(func=cmd_enhance)
+
+    chk = sub.add_parser("site-check", help="check that Bandai's site still parses (used by the weekly CI check)")
+    chk.add_argument("--baseline", help="counts JSON from the last good check; a drop of more than 20%% is reported")
+    chk.add_argument("--save-counts", help="write this check's counts here (only when it passes)")
+    chk.add_argument("--report", help="write a Markdown report here")
+    chk.set_defaults(func=cmd_site_check)
 
     g = sub.add_parser("gui", help="open the desktop app")
     g.set_defaults(func=cmd_gui)

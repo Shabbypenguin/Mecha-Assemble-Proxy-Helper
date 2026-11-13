@@ -60,6 +60,12 @@ def full_update(cache: Cache, log: LogFn = print, on_step: StepFn | None = None,
         _, more = fetch_images(cache, [c for c in cards if c.code in changed], offline=False, refresh=True,
                                on_step=on_step, should_stop=should_stop)
         missing += more
+    if not (should_stop and should_stop()):
+        from . import scenarios
+        try:  # scenarios are extra: a problem there mustn't spoil the card update
+            scenarios.update(cache, log=log, on_step=on_step, should_stop=should_stop)
+        except Exception as exc:  # noqa: BLE001
+            log(f"warning: couldn't update scenarios ({exc})")
     return manifest, missing, sorted(changed)
 
 

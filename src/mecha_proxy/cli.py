@@ -236,6 +236,41 @@ def cmd_cache(args) -> int:
     return 0
 
 
+def cmd_scenarios(args) -> int:
+    from datetime import date
+
+    from . import scenarios
+    cache = _open_cache(args)
+    if args.action == "update":
+        scs, changed = scenarios.update(cache, log=print)
+        print(f"{sum(s.available for s in scs)} scenario(s) available, {len(changed)} downloaded or updated "
+              f"-> {scenarios.folder(cache)}")
+        return 0
+    saved = scenarios.saved_list(cache)
+    if not saved:
+        sys.exit("no scenario list yet (run 'mecha-proxy scenarios update' first)")
+    if args.action == "list":
+        for sc in saved:
+            state = ("coming soon" if not sc.available else
+                     f"updated {sc.updated}" if scenarios.local_pdf(cache, sc) else "not downloaded")
+            print(f"{sc.set_name:<16} {sc.title:<32} {state}")
+        return 0
+    # build
+    wanted = [w.strip().lower() for w in (args.only or "").split(",") if w.strip()]
+    picks = [(sc, scenarios.local_pdf(cache, sc)) for sc in saved
+             if sc.available and (not wanted or any(w in sc.title.lower() for w in wanted))]
+    picks = [(sc, p) for sc, p in picks if p]
+    if not picks:
+        sys.exit("no downloaded scenarios match (see 'mecha-proxy scenarios list')")
+    out = Path(args.out) if args.out else (cache.root / "output" /
+                                           f"Mecha-Assemble-Proxy-Helper_{date.today().isoformat()}_scenarios.pdf")
+    path, notes = scenarios.build_letter_pdf([p for _, p in picks], out, goal_cards=args.goal_cards, log=print)
+    for n in notes:
+        print("note:", n)
+    print(f"wrote {path}")
+    return 0
+
+
 def cmd_ai(args) -> int:
     from . import enhance
     cache = _open_cache(args)
@@ -342,6 +377,14 @@ def build_parser() -> argparse.ArgumentParser:
     ai.add_argument("action", choices=["status", "install", "remove"])
     ai.add_argument("--preset", choices=["ultramix", "official"], default="ultramix")
     ai.set_defaults(func=cmd_ai)
+
+    sc = sub.add_parser("scenarios", help="Bandai's scenario PDFs: update / list / build a Letter PDF")
+    sc.add_argument("action", choices=["update", "list", "build"])
+    sc.add_argument("--only", help="build: scenarios whose title contains any of these words, comma separated")
+    sc.add_argument("--goal-cards", action="store_true",
+                    help="build: add a page with two copies of each goal card (88 x 63 mm)")
+    sc.add_argument("--out", help="build: output PDF path")
+    sc.set_defaults(func=cmd_scenarios)
 
     en = sub.add_parser("enhance", help="AI-enhance downloaded cards into cards-enhanced/ (originals untouched)")
     en.add_argument("--type", default="unit,other", help="card types, comma separated, or 'all' (default unit,other)")

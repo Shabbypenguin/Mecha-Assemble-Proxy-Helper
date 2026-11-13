@@ -19,10 +19,11 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame, QGr
                                QProgressBar, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
                                QTabWidget, QVBoxLayout, QWidget)
 
-from . import __version__, config, deckcode, enhance, filters, scraper, service
+from . import __version__, config, deckcode, enhance, filters, scenarios, scraper, service
 from .cache import atomic_write
 from .gui_ai import AiMixin
 from .gui_deck import PasteDeckDialog
+from .gui_scen import ScenarioMixin
 from .print_dialog import PrintDialog, settings_from_prefs
 from .widgets import ChipBox, HoverPreview, RangeBox
 
@@ -43,7 +44,8 @@ DEFAULT_PREFS = {"mode": "duplex", "flip": "long", "bleed": 0.0, "gap": 0.0, "of
                  "ai_auto": True, "ai_space_saving": False, "show_enhanced": False,
                  "small_pdf": False,
                  "changes_ack": "",
-                 "skip_app_version": ""}  # app update the user already opened (don't nag again)  # newest Bandai card change the user has already looked at
+                 "skip_app_version": "",
+                 "scen_goal_cards": True}  # app update the user already opened (don't nag again)  # newest Bandai card change the user has already looked at
 CHECK_INTERVAL_S = 24 * 3600   # look for new cards on the site at most once a day
 BANNER_BG, BANNER_FG = "#2C52B3", "#FFFFFF"
 
@@ -625,7 +627,7 @@ class CardTab(QWidget):
 
 
 # ---- main window ----------------------------------------------------------------
-class MainWindow(AiMixin, QMainWindow):
+class MainWindow(ScenarioMixin, AiMixin, QMainWindow):
     def __init__(self, home: str | None = None):
         super().__init__()
         self.setWindowTitle(f"{APP_TITLE} {__version__}")
@@ -659,6 +661,7 @@ class MainWindow(AiMixin, QMainWindow):
         outer.addWidget(self.banner)
         self._new_on_site: list[str] = []
         self._app_update: tuple[str, str] | None = None  # (version, release page) if newer exists
+        self._new_scenarios: list[str] = []
         self._checker: Task | None = None
         body.addWidget(self._build_sidebar(), 0)
         self.tabs = QTabWidget()
@@ -667,6 +670,7 @@ class MainWindow(AiMixin, QMainWindow):
             tab.selection_changed.connect(self._update_summary)
             tab.show_enhanced_toggled.connect(self._set_show_enhanced)
             tab.grid.compare_requested.connect(self.compare_card)
+        self._build_scenarios()
         self.tabs.currentChanged.connect(self._tab_changed)
         body.addWidget(self.tabs, 1)
         self._build_menus()
@@ -697,9 +701,12 @@ class MainWindow(AiMixin, QMainWindow):
             self.filter_stack.addWidget(tab.filters)
         v.addWidget(self.filter_stack, 1)
 
+        self.card_controls = QWidget()  # hidden on the Scenarios tab, which has its own panel
+        cv = QVBoxLayout(self.card_controls)
+        cv.setContentsMargins(0, 0, 0, 0)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
-        v.addWidget(self.summary)
+        cv.addWidget(self.summary)
         lists = QHBoxLayout()  # deck lists: shared by every tab, like the selection summary
         self.btn_import = QPushButton("Import list…")
         self.btn_import.setToolTip("Select the cards from a deck list someone shared  (Ctrl+Shift+V)")
@@ -710,12 +717,13 @@ class MainWindow(AiMixin, QMainWindow):
         self.btn_export.clicked.connect(self.copy_deck_code)
         lists.addWidget(self.btn_import)
         lists.addWidget(self.btn_export)
-        v.addLayout(lists)
+        cv.addLayout(lists)
         self.btn_print = QPushButton("Start printing…")
         self.btn_print.setObjectName("accent")
         self.btn_print.setToolTip("Choose print settings with a preview, then save the PDF(s)  (Ctrl+P)")
         self.btn_print.clicked.connect(self.start_printing)
-        v.addWidget(self.btn_print)
+        cv.addWidget(self.btn_print)
+        v.addWidget(self.card_controls)
         return side
 
     def _build_menus(self):
@@ -842,6 +850,10 @@ class MainWindow(AiMixin, QMainWindow):
             n = len(self._new_on_site)
             sample = ", ".join(self._new_on_site[:3]) + (", …" if n > 3 else "")
             parts.append(f"{n} new card{'s' * (n != 1)} on the site ({sample})")
+        if self._new_scenarios:
+            n = len(self._new_scenarios)
+            parts.append(f"{n} new scenario{'s' * (n != 1)} ({', '.join(t.title() for t in self._new_scenarios[:2])}"
+                         f"{', …' if n > 2 else ''})")
         if missing:
             n = len(missing)
             parts.append(f"{n} card{'s' * (n != 1)} not downloaded yet")
@@ -875,15 +887,19 @@ class MainWindow(AiMixin, QMainWindow):
             cache = Cache(root, log=lambda m: None)  # own session
             app_update = service.latest_release()   # never raises
             try:
+                new_scen = scenarios.new_on_site(cache)
+            except Exception:  # noqa: BLE001 - optional
+                new_scen = []
+            try:
                 new = service.new_on_site(cache, manifest)
             except Exception:  # noqa: BLE001 - still report an app update if the card site is down
                 if app_update is None:
                     raise
                 new = []
-            return new, app_update
+            return new, app_update, new_scen
 
         def done(result):
-            new, self._app_update = result
+            new, self._app_update, self._new_scenarios = result
             self._new_on_site = new
             self.prefs["last_check"] = time.time()
             self._save_prefs()
@@ -928,10 +944,16 @@ class MainWindow(AiMixin, QMainWindow):
 
     @property
     def current_type(self) -> str:
-        return list(self.card_tabs)[self.tabs.currentIndex()]
+        """Card type of the current tab (the last card tab while Scenarios is showing)."""
+        types = list(self.card_tabs)
+        idx = self.tabs.currentIndex()
+        if 0 <= idx < len(types):
+            self._last_card_type = types[idx]
+        return getattr(self, "_last_card_type", types[0])
 
     def _tab_changed(self, idx: int):
         self.filter_stack.setCurrentIndex(idx)
+        self.card_controls.setVisible(idx != getattr(self, "scen_index", -1))
         HoverPreview.get().hide()
         self._update_summary()
 
@@ -1041,6 +1063,7 @@ class MainWindow(AiMixin, QMainWindow):
             self.tabs.setTabText(i, f"{config.CARD_TYPES[t].label} ({len(cards)})")
         self.cache.save_index()
         self.refresh_enhanced()
+        self.reload_scenarios()
         self._update_summary()
         self.refresh_banner()
 
@@ -1156,6 +1179,7 @@ class MainWindow(AiMixin, QMainWindow):
             stats, missing, cancelled, changed = result
             if not cancelled:
                 self._new_on_site = []  # the update just pulled the full lists
+                self._new_scenarios = []
                 self._after_task = self.auto_enhance_new
             self.reload_cards()
             msg = (f"{'Stopped. ' if cancelled else ''}{stats['downloaded']} downloaded, "
@@ -1315,10 +1339,25 @@ def _smoke_test(home: str | None) -> int:
             app.processEvents()
         tabs = len(win.card_tabs)
         win.close()
+        # packaged-build check of the PDF libraries the Scenarios tab needs
+        import io as _io
+
+        import pypdf
+        import pypdfium2
+        from reportlab.pdfgen import canvas as _canvas
+        buf = _io.BytesIO()
+        cv = _canvas.Canvas(buf, pagesize=(200, 100))
+        cv.drawString(10, 50, "smoke")
+        cv.save()
+        pdf_pages = len(pypdf.PdfReader(_io.BytesIO(buf.getvalue())).pages)
+        doc = pypdfium2.PdfDocument(buf.getvalue())
+        rendered = doc[0].render(scale=1).to_pil().size
+        doc.close()
         from . import enhance
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(f"ok {__version__} {sys.platform} {platform.machine()} tabs={tabs} "
-                       f"ai_engine={enhance.platform_key()}\n", encoding="utf-8")
+                       f"ai_engine={enhance.platform_key()} pdf_pages={pdf_pages} pdfium={rendered[0]}x{rendered[1]}\n",
+                       encoding="utf-8")
         return 0
     except Exception:  # noqa: BLE001 - report anything that breaks startup
         try:

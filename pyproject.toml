@@ -15,11 +15,13 @@ dependencies = [
   "Pillow>=10.0",
   "reportlab>=4.0",
   "platformdirs>=4.0",
+  "pypdf>=4.0",        # scenarios: split Bandai's spreads into Letter pages
+  "pypdfium2>=4.0",    # scenarios: find the goal card, previews
 ]
 
 [project.optional-dependencies]
 gui = ["PySide6-Essentials>=6.7"]
-dev = ["pytest>=8", "pypdf>=4", "numpy>=1.26"]  # numpy: test measurements only
+dev = ["pytest>=8", "numpy>=1.26"]  # numpy: test measurements only
 
 [project.scripts]
 mecha-proxy = "mecha_proxy.cli:main"

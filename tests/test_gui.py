@@ -453,3 +453,49 @@ def test_app_update_banner(app, home, monkeypatch):
     w.refresh_banner()
     assert "Version 10.0.0" in w.banner.text()  # a newer one is announced again
     w.close()
+
+
+def test_scenarios_tab(app, home, monkeypatch, tmp_path):
+    from pypdf import PdfReader
+
+    from mecha_proxy import scenarios as S
+    from mecha_proxy.cache import Cache
+
+    from .test_scenarios import _Sess, _site
+    routes = _site(tmp_path)
+    cache = Cache(home, session=_Sess(routes), delay_s=0, log=lambda *a: None)
+    S.update(cache, log=lambda m: None)
+
+    shown = []
+    monkeypatch.setattr(gui.QMessageBox, "exec", lambda box: shown.append(box.text()) or 0)
+    w = gui.MainWindow(str(home))
+    assert w.tabs.tabText(w.scen_index) == "Scenarios (3)"
+    rows = w.scen_tab.rows
+    assert [r.sc.title for r in rows][:3] == ["SAMPLE ONE", "SAMPLE TWO", "SAMPLE THREE"]
+    assert not rows[3].check.isEnabled()  # coming soon
+    assert all(r.check.isEnabled() for r in rows[:3])
+
+    w.tabs.setCurrentIndex(w.scen_index)  # sidebar swaps to the scenario panel
+    assert w.filter_stack.currentWidget() is w.scen_panel and not w.card_controls.isVisibleTo(w)
+    assert w.current_type == "unit"         # card actions still know a card type
+    assert not w.scen_panel.btn_save.isEnabled()
+    rows[0].check.setChecked(True)
+    rows[2].check.setChecked(True)
+    assert "2 scenarios selected → 6 Letter pages" in w.scen_panel.summary.text()
+    w.scen_panel.goal_cards.setChecked(False)
+    assert "→ 4 Letter pages" in w.scen_panel.summary.text() and w.prefs["scen_goal_cards"] is False
+    w.scen_panel.goal_cards.setChecked(True)
+
+    out = tmp_path / "scen.pdf"
+    monkeypatch.setattr(w, "_ask_output", lambda *a, **k: out)
+    w.scen_panel.btn_save.click()
+    while w.task is not None:
+        w.task.wait(20000)
+        app.processEvents()
+    app.processEvents()
+    assert len(PdfReader(str(out)).pages) == 6
+    assert shown and "88 × 63 mm" in shown[-1]
+
+    w.tabs.setCurrentIndex(0)
+    assert w.card_controls.isVisibleTo(w)
+    w.close()

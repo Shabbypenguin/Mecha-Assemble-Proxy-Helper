@@ -60,6 +60,7 @@ python -m pip install -e ".[gui]" && mecha-proxy-gui
   saved ones. Changed cards get an **↻ Updated** marker (hover it to see what changed), their
   image is re-checked. If a changed card is one you've printed before, a banner offers to select
   those cards for reprinting.
+- **Scenarios** tab: Bandai's scenario PDFs as Letter pages, with goal cards (see below).
 - **Deck lists**: **Export list** (above Start printing, or *Cards → Export deck list*) copies
   the selected cards from every tab to the clipboard as plain text, one `1x ST01-U02` line per
   card, ready to paste into Discord. **Import list…** opens a box to paste a shared list into;
@@ -119,6 +120,28 @@ room has a 50 mm bar to check the scale.
 - `--size 148x105` overrides the card size in mm.
 - `--offline` builds using only already-downloaded images.
 - `mecha-proxy back --type unit -o back.png` exports the built-in back art.
+
+## Scenarios
+
+The **Scenarios** tab lists Bandai's official scenarios (from the site's Rules/Q&A → Scenario
+page) with a preview of each. *Update cards* downloads new and updated scenario PDFs into
+`scenarios/`; scenarios marked "coming soon" show up greyed out until Bandai posts them.
+
+Bandai publishes each scenario as a two-page rulebook spread on one wide page. **Save as Letter
+PDF…** splits it down the middle into two US Letter pages, scaled to fit with a small margin
+(Bandai's pages run edge to edge, which home printers can't print). Text and artwork are kept
+exactly as published.
+
+**Add goal cards (2 per scenario)** adds a third page with two copies of the scenario goal
+card – one per player – at 88 × 63 mm (tactics card size) with crop marks. The card is cut out
+of Bandai's own PDF, nothing is redrawn. It is found by its red "SCENARIO GOAL CARD" ribbon,
+so it works whatever size Bandai printed it at; if the app can't find it with certainty, that
+scenario just gets its two pages.
+
+*Open original* (or double-click a scenario) opens Bandai's PDF as published.
+
+Command line: `mecha-proxy scenarios update`, `mecha-proxy scenarios list`,
+`mecha-proxy scenarios build --goal-cards [--only "leviathan,lockdown"] [--out file.pdf]`.
 
 ## AI enhancement (optional)
 

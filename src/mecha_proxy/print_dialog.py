@@ -45,6 +45,8 @@ CAPTIONS = {
         "short": "The sheet turns over like a notepad (top to bottom). Pick this if your printer is set "
                  "to flip on the short edge, or that's how you re-feed the stack.",
     },
+    "paper": "The paper in your printer. US Letter is standard in North America, A4 almost everywhere else. "
+             "The number of cards per sheet can change slightly between the two. Also used for scenarios.",
     "back": "The image printed on the back of every card. The built-in back is original art; "
             "you can also pick your own image (e.g. a scan of your card back).",
     "bleed": "Extends each card's edge colour past the cut line, so a slightly off cut leaves no white "
@@ -513,6 +515,9 @@ class PrintDialog(QDialog):
 
         box = QGroupBox("Print settings")
         form = QFormLayout(box)
+        self.paper = QComboBox()
+        for k, (label, _) in config.PAPER_SIZES.items():
+            self.paper.addItem(label, k)
         self.mode = QComboBox()
         for k, label in MODES:
             self.mode.addItem(label, k)
@@ -577,7 +582,7 @@ class PrintDialog(QDialog):
         cl.addWidget(self.small_pdf)
         self.small_pdf.setVisible(self.small_applies)
         cl.addStretch()
-        rows = [("Mode", self.mode, "mode"), ("Flip", self.flip, "flip"), ("Back", self.back, "back"),
+        rows = [("Paper", self.paper, "paper"), ("Mode", self.mode, "mode"), ("Flip", self.flip, "flip"), ("Back", self.back, "back"),
                 ("Bleed", self.bleed, "bleed"), ("Card spacing", self.gap, "gap"),
                 ("Back offset", offw, "offset"), ("", checks, None)]
         self._topic_of = {}
@@ -638,8 +643,9 @@ class PrintDialog(QDialog):
         right.addLayout(btns)
 
         self._load(prefs)
-        for w in (self.mode, self.flip, self.which):
+        for w in (self.paper, self.mode, self.flip, self.which):
             w.currentIndexChanged.connect(self._changed)
+        self.paper.currentIndexChanged.connect(lambda: self._pin("paper"))
         self.back_browse.clicked.connect(self._browse_back)
         self.back_default.clicked.connect(self._default_back)
         for w in (self.bleed, self.gap, self.off_x, self.off_y):
@@ -661,6 +667,7 @@ class PrintDialog(QDialog):
 
     # -- prefs <-> widgets --
     def _load(self, p: dict):
+        self.paper.setCurrentIndex(max(self.paper.findData(p.get("paper", config.DEFAULT_PAPER)), 0))
         self.mode.setCurrentIndex(max(self.mode.findData(p.get("mode", "duplex")), 0))
         self.flip.setCurrentIndex(max(self.flip.findData(p.get("flip", "long")), 0))
         self.bleed.setValue(float(p.get("bleed", 0)))
@@ -674,7 +681,7 @@ class PrintDialog(QDialog):
         self.small_pdf.setChecked(bool(p.get("small_pdf", False)))
 
     def result_prefs(self) -> dict:
-        return {"mode": self.mode.currentData(), "flip": self.flip.currentData(),
+        return {"paper": self.paper.currentData(), "mode": self.mode.currentData(), "flip": self.flip.currentData(),
                 "bleed": self.bleed.value(), "gap": self.gap.value(),
                 "off_x": self.off_x.value(), "off_y": self.off_y.value(),
                 "crop": self.crop.isChecked(), "reverse": self.reverse.isChecked(),
@@ -811,7 +818,7 @@ class PrintDialog(QDialog):
         fronts = [self.enhanced.get(c.code) or self.images.get(c.code) for c, q in self.selections[t]
                   for _ in range(q)]
         try:
-            g = fit_grid(*config.LETTER_MM, *s.card_size, bleed=s.bleed, margin=s.margin, gap=s.gap)
+            g = fit_grid(*s.page_mm, *s.card_size, bleed=s.bleed, margin=s.margin, gap=s.gap)
         except ValueError as exc:
             self.pv_front.set_data(None, [], empty_text=str(exc))
             self.pv_back.set_data(None, [], empty_text="")
@@ -827,7 +834,7 @@ class PrintDialog(QDialog):
             self.pv_back.set_data(g, [bp] * len(first), back=True, offset=s.back_offset, flip=s.flip,
                                   crop=s.crop_marks, images_include_bleed=s.back is None)
         sheets = service.sheets_needed(s, len(fronts))
-        self.info.setText(f"{len(fronts)} card{'s' * (len(fronts) != 1)} · {g.per_page} per sheet · {sheets} sheet{'s' * (sheets != 1)}"
+        self.info.setText(f"{config.paper_label(s.paper)} · {len(fronts)} card{'s' * (len(fronts) != 1)} · {g.per_page} per sheet · {sheets} sheet{'s' * (sheets != 1)}"
                           f"{' · cards rotated to fit' if g.rotated else ''}"
                           + (f" · AI-enhanced: {self.ai_count[0]} of {self.ai_count[1]}" if self.ai_count[0] else ""))
         self.diagram.pdf_mb = self._pdf_estimate()
@@ -841,4 +848,6 @@ def settings_from_prefs(p: dict, card_type: str) -> service.PrintSettings:
                                  bleed=float(p.get("bleed", 0)), gap=float(p.get("gap", 0)), back=custom,
                                  back_offset=(float(p.get("off_x", 0)), float(p.get("off_y", 0))),
                                  crop_marks=bool(p.get("crop", True)), reverse_backs=bool(p.get("reverse", False)),
-                                 enhanced=bool(p.get("ai_enabled", False)), small_pdf=bool(p.get("small_pdf", False)))
+                                 enhanced=bool(p.get("ai_enabled", False)), small_pdf=bool(p.get("small_pdf", False)),
+                                 paper=p.get("paper", config.DEFAULT_PAPER) if p.get("paper") in config.PAPER_SIZES
+                                 else config.DEFAULT_PAPER)

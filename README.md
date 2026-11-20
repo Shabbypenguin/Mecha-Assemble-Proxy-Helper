@@ -1,7 +1,7 @@
 # Mecha-Assemble-Proxy-Helper
 
 Lays out replacement **unit** and **tactics** cards for miniatures you already own
-onto US Letter sheets, ready to print on cardstock at home, single- or double-sided.
+onto US Letter or A4 sheets, ready to print on cardstock at home, single- or double-sided.
 
 > Unofficial fan tool. Not affiliated with, endorsed by, or supported by the
 > publisher. It ships **no card images**: each user's copy downloads the images
@@ -60,7 +60,7 @@ python -m pip install -e ".[gui]" && mecha-proxy-gui
   saved ones. Changed cards get an **↻ Updated** marker (hover it to see what changed), their
   image is re-checked. If a changed card is one you've printed before, a banner offers to select
   those cards for reprinting.
-- **Scenarios** tab: Bandai's scenario PDFs as Letter pages, with goal cards (see below).
+- **Scenarios** tab: Bandai's scenario PDFs as Letter or A4 pages, with goal cards (see below).
 - **Deck lists**: **Export list** (above Start printing, or *Cards → Export deck list*) copies
   the selected cards from every tab to the clipboard as plain text, one `1x ST01-U02` line per
   card, ready to paste into Discord. **Import list…** opens a box to paste a shared list into;
@@ -113,6 +113,8 @@ room has a 50 mm bar to check the scale.
 
 ## Other options
 
+- `--paper a4` lays out on A4 instead of US Letter (the app has the same setting under
+  **Paper** in the print dialog and the Scenarios panel).
 - `--bleed 2` extends each card's edge colour 2 mm past the cut line, so a slightly
   off cut doesn't leave white slivers. Fewer cards may fit per sheet.
 - `--spacing 3` leaves 3 mm of white space between cards so each is cut on its own.
@@ -127,9 +129,10 @@ The **Scenarios** tab lists Bandai's official scenarios (from the site's Rules/Q
 page) with a preview of each. *Update cards* downloads new and updated scenario PDFs into
 `scenarios/`; scenarios marked "coming soon" show up greyed out until Bandai posts them.
 
-Bandai publishes each scenario as a two-page rulebook spread on one wide page. **Save as Letter
-PDF…** splits it down the middle into two US Letter pages, scaled to fit with a small margin
-(Bandai's pages run edge to edge, which home printers can't print). Text and artwork are kept
+Bandai publishes each scenario as a two-page rulebook spread on one wide page. **Save as
+PDF…** splits it down the middle into two pages of your paper size, scaled to fit with a small
+margin: about 91% on US Letter, 95% on A4 (Bandai's pages run edge to edge, which home printers
+can't print). Text and artwork are kept
 exactly as published.
 
 **Add goal cards (2 per scenario)** adds a third page with two copies of the scenario goal
@@ -141,7 +144,29 @@ scenario just gets its two pages.
 *Open original* (or double-click a scenario) opens Bandai's PDF as published.
 
 Command line: `mecha-proxy scenarios update`, `mecha-proxy scenarios list`,
-`mecha-proxy scenarios build --goal-cards [--only "leviathan,lockdown"] [--out file.pdf]`.
+`mecha-proxy scenarios build --goal-cards [--paper a4] [--only "leviathan,lockdown"] [--out file.pdf]`.
+
+## Rules
+
+The **Rules** menu lists Bandai's rule documents (Rules/Q&A → Rules page), such as the Official
+Core Rulebook and the Organized Play Reference Guide. Picking one checks Bandai's page and
+downloads the latest version if it changed (Bandai puts the date in the file name, so the app
+always follows the page, never an old link). Without a connection it uses the copy downloaded
+earlier. *Update cards* refreshes the list of documents but doesn't download them.
+
+- **Full pages** – one page per sheet, at 100% wherever the page fits (the documents' wide
+  margins are trimmed, which is also what lets A4 print them at full size).
+- **Booklet (fold in half)** – two pages per sheet side; fold the stack and staple along the
+  fold. Text comes out at roughly 70–78% size. Options:
+  - *Printing*: double-sided printer, or manual (two files – print `_fronts`, put the stack back
+    in the tray, print `_backs`; *Reverse back page order* if the backs come out backwards).
+  - *Assembly guide page* (on by default): a first sheet with illustrated print / fold / staple
+    steps, worded for your settings; its back is blank so the pages still pair up. The same guide
+    is under **How to assemble…** in the app. Each sheet is also labelled ("Sheet 3 of 14 -
+    front") in its bottom margin.
+
+Command line: `mecha-proxy rules list`, `mecha-proxy rules get --doc core`,
+`mecha-proxy rules build --doc core [--booklet [--manual] [--reverse] [--no-guide]] [--paper a4] [--out file.pdf]`.
 
 ## AI enhancement (optional)
 
@@ -216,11 +241,11 @@ Mecha-Assemble-Proxy-Helper/
 
 | Type | Size used | Status |
 |---|---|---|
-| Unit | 148 × 105 mm (A6 landscape) | community-reported, matches image proportions; unconfirmed |
+| Unit | 148.5 × 105.25 mm | measured from a real card |
 | Tactics | 63 × 88 mm | estimated from image proportions; unconfirmed |
 | Other (tokens) | 88 × 63 mm | estimated from image proportions; unconfirmed |
 
-Sizes will be updated once confirmed with a ruler. Until then, use `--size` if yours differ.
+Tactics and token sizes will be updated once measured from real cards. Until then, use `--size` if yours differ.
 
 ## Building the Windows app
 
@@ -254,6 +279,13 @@ are created next to the .exe, so the whole folder is portable. If the folder isn
 The .exe isn't code-signed, so Windows SmartScreen may say "Windows protected your PC":
 choose **More info → Run anyway**.
 
+## Reporting a problem
+
+Open an [issue](https://github.com/Shabbypenguin/Mecha-Assemble-Proxy-Helper/issues/new?template=bug_report.yml)
+and paste the output of **Help → Copy debug info** (or `mecha-proxy debug-info`): app and system
+versions, what's downloaded, your print settings, recent activity and the last error. Your user
+name is replaced by `<user>`, and the app never sends it anywhere itself.
+
 ## Development
 
 ```
@@ -263,8 +295,8 @@ python -m pip install -e ".[dev]" && python -m pytest
 ### Weekly site check
 
 `.github/workflows/site-check.yml` runs every Monday (and on demand from the Actions tab). It
-reads every card list page, a few card details and images per card type, and the scenario list,
-and opens an issue labelled `site-check` if anything no longer parses or a card count drops by
+reads every card list page, a few card details and images per card type, and the scenario and
+rules lists, and opens an issue labelled `site-check` if anything no longer parses or a card count drops by
 more than 20% since the last good check. Run the same check locally with
 `mecha-proxy site-check`.
 

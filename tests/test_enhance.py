@@ -84,10 +84,10 @@ def test_space_saving_and_print_sizes(lib, tmp_path):
     work = cache.processed_dir
 
     p400 = store.for_print(card, 400, work)
-    assert Image.open(p400).width == enhance.print_width_px("unit", 400) == 2331
+    assert Image.open(p400).width == enhance.print_width_px("unit", 400) == 2339  # 148.5 mm at 400 DPI
     assert store.for_print(card, None, work) == store.path(card)  # "max" = the master itself
     small = store.for_print(card, 400, work, jpeg=True)  # "Smaller PDF"
-    assert small.suffix == ".jpg" and Image.open(small).width == 2331
+    assert small.suffix == ".jpg" and Image.open(small).width == 2339  # 148.5 mm at 400 DPI
 
     webp = store.path(card)
     assert store.compress(card)

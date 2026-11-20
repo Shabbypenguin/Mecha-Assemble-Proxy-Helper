@@ -1,4 +1,4 @@
-"""Scenarios tab: Bandai's scenario PDFs, listed with a preview, saved as US Letter PDFs."""
+"""Scenarios tab: Bandai's scenario PDFs, listed with a preview, saved as US Letter or A4 PDFs."""
 from __future__ import annotations
 
 import html
@@ -6,10 +6,10 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
                                QVBoxLayout, QWidget)
 
-from . import scenarios
+from . import config, scenarios
 
 THUMB_W = 150
 
@@ -89,7 +89,7 @@ class ScenarioTab(QWidget):
         self.rows: list[ScenarioRow] = []
         v = QVBoxLayout(self)
         v.setContentsMargins(4, 4, 4, 4)
-        intro = QLabel("Bandai's official scenarios. Each prints as two Letter pages (the rulebook spread split "
+        intro = QLabel("Bandai's official scenarios. Each prints as two pages (the rulebook spread split "
                        "down the middle), optionally with a page of goal cards. Click a scenario to select it.")
         intro.setWordWrap(True)
         intro.setObjectName("muted")
@@ -141,12 +141,20 @@ class ScenarioPanel(QWidget):
         v.setContentsMargins(4, 4, 4, 4)
         head = QLabel("<b>Scenarios</b>")
         v.addWidget(head)
+        self.paper = QComboBox()
+        for k, (label, _) in config.PAPER_SIZES.items():
+            self.paper.addItem(label, k)
+        self.paper.setToolTip("Same setting as Paper in the print dialog")
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.addRow("Paper", self.paper)
+        v.addLayout(form)
         self.goal_cards = QCheckBox("Add goal cards (2 per scenario)")
         self.goal_cards.setToolTip("Adds a page with two copies of the scenario goal card – one for each player – "
                                    "at 88 × 63 mm (tactics card size) with crop marks.\nThe card is cut out of "
                                    "Bandai's own PDF, nothing is redrawn.")
         v.addWidget(self.goal_cards)
-        note = QLabel("Pages are scaled to fit Letter paper with a small margin. Print goal cards at "
+        note = QLabel("Pages are scaled to fit the paper with a small margin. Print goal cards at "
                       "100% / Actual size.")
         note.setWordWrap(True)
         note.setObjectName("muted")
@@ -155,13 +163,14 @@ class ScenarioPanel(QWidget):
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         v.addWidget(self.summary)
-        self.btn_save = QPushButton("Save as Letter PDF…")
+        self.btn_save = QPushButton("Save as PDF…")
         self.btn_save.setObjectName("accent")
         v.addWidget(self.btn_save)
 
     def update_summary(self, n_selected: int):
         pages = n_selected * (3 if self.goal_cards.isChecked() else 2)
-        self.summary.setText(f"{n_selected} scenario{'s' * (n_selected != 1)} selected → {pages} Letter page"
+        paper = config.paper_label(self.paper.currentData())
+        self.summary.setText(f"{n_selected} scenario{'s' * (n_selected != 1)} selected → {pages} {paper} page"
                              f"{'s' * (pages != 1)}" if n_selected else "Select scenarios on the left.")
         self.btn_save.setEnabled(n_selected > 0)
 
@@ -175,6 +184,8 @@ class ScenarioMixin:
         self.scen_panel = ScenarioPanel()
         self.scen_panel.goal_cards.setChecked(bool(self.prefs.get("scen_goal_cards", True)))
         self.scen_panel.goal_cards.toggled.connect(self._scen_goal_toggled)
+        self._scen_sync_paper()
+        self.scen_panel.paper.currentIndexChanged.connect(self._scen_paper_changed)
         self.scen_panel.btn_save.clicked.connect(self.save_scenarios)
         self.scen_tab.selection_changed.connect(self._scen_summary)
         self.scen_tab.open_requested.connect(self._open_scenario)
@@ -186,6 +197,21 @@ class ScenarioMixin:
         self.prefs["scen_goal_cards"] = on
         self._save_prefs()
         self._scen_summary()
+
+    def _scen_sync_paper(self):
+        """Show the shared paper preference (also changed from the print dialog)."""
+        combo = self.scen_panel.paper
+        combo.blockSignals(True)
+        combo.setCurrentIndex(max(combo.findData(self.prefs.get("paper", config.DEFAULT_PAPER)), 0))
+        combo.blockSignals(False)
+        self._scen_summary()
+
+    def _scen_paper_changed(self, _=None):
+        self.prefs["paper"] = self.scen_panel.paper.currentData()
+        self._save_prefs()
+        self._scen_summary()
+        if hasattr(self, "_update_summary"):
+            self._update_summary()
 
     def _scen_summary(self):
         self.scen_panel.update_summary(len(self.scen_tab.selected()))
@@ -219,11 +245,12 @@ class ScenarioMixin:
         if not out:
             return
         goal = self.scen_panel.goal_cards.isChecked()
+        paper = self.scen_panel.paper.currentData()
         paths = [p for _, p in chosen]
 
         def work(task):
             task.log(f"Laying out {len(paths)} scenario(s)…")
-            return scenarios.build_letter_pdf(paths, out, goal_cards=goal, log=task.log)
+            return scenarios.build_pdf(paths, out, goal_cards=goal, log=task.log, paper=paper)
 
         def done(result):
             path, notes = result
@@ -231,7 +258,7 @@ class ScenarioMixin:
             lines = [f"Saved:\n  {path}"]
             if notes:
                 lines.append("\n".join(notes))
-            lines.append("Pages are already sized for Letter paper."
+            lines.append(f"Pages are already sized for {config.paper_label(paper)} paper."
                          + (" Print at 100% / Actual size so the goal cards come out 88 × 63 mm." if goal else ""))
             from PySide6.QtWidgets import QMessageBox
 

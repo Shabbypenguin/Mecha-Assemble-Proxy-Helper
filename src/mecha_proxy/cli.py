@@ -189,7 +189,7 @@ def _settings(args) -> service.PrintSettings:
         back_offset=args.back_offset, crop_marks=not getattr(args, "no_crop_marks", False),
         reverse_backs=getattr(args, "reverse_backs", False),
         enhanced=getattr(args, "enhanced", False), sharpness=getattr(args, "sharpness", "400"),
-        small_pdf=getattr(args, "small_pdf", False))
+        small_pdf=getattr(args, "small_pdf", False), paper=getattr(args, "paper", config.DEFAULT_PAPER))
 
 
 def cmd_calibrate(args) -> int:
@@ -264,7 +264,8 @@ def cmd_scenarios(args) -> int:
         sys.exit("no downloaded scenarios match (see 'mecha-proxy scenarios list')")
     out = Path(args.out) if args.out else (cache.root / "output" /
                                            f"Mecha-Assemble-Proxy-Helper_{date.today().isoformat()}_scenarios.pdf")
-    path, notes = scenarios.build_letter_pdf([p for _, p in picks], out, goal_cards=args.goal_cards, log=print)
+    path, notes = scenarios.build_pdf([p for _, p in picks], out, goal_cards=args.goal_cards, log=print,
+                                      paper=args.paper)
     for n in notes:
         print("note:", n)
     print(f"wrote {path}")
@@ -347,6 +348,59 @@ def cmd_enhance(args) -> int:
     return 0 if not failed else 1
 
 
+def cmd_rules(args) -> int:
+    from datetime import date
+
+    from . import rulesdocs
+    cache = _open_cache(args)
+    if args.action == "list":
+        try:
+            docs = rulesdocs.refresh_list(cache)
+        except Exception as exc:  # noqa: BLE001 - offline: show the last list
+            docs = rulesdocs.saved_list(cache)
+            print(f"note: couldn't reach Bandai's site ({exc}); showing the last list")
+        for d in docs:
+            have = rulesdocs.local_copy(cache, d.title)
+            print(f"{d.title:<40} updated {d.updated or '?':<11} {d.size or '':<8} "
+                  f"{'downloaded' if have else 'not downloaded'}")
+        return 0
+    if not args.doc:
+        sys.exit("choose a document with --doc (part of its title, see 'mecha-proxy rules list')")
+    docs = rulesdocs.saved_list(cache)
+    if not docs:
+        try:
+            docs = rulesdocs.refresh_list(cache)
+        except Exception as exc:  # noqa: BLE001
+            sys.exit(f"no rules list yet and Bandai's site can't be reached ({exc})")
+    hits = [d for d in docs if d.available and args.doc.lower() in d.title.lower()]
+    if len(hits) != 1:
+        sys.exit(f"--doc {args.doc!r} matches {len(hits)} documents: "
+                 + (", ".join(d.title for d in hits) or "none") + " (see 'mecha-proxy rules list')")
+    src, note = rulesdocs.get_latest(cache, hits[0].title, log=print)
+    if note:
+        print("note:", note)
+    if args.action == "get":
+        print(src)
+        return 0
+    layout = "booklet" if args.booklet else "pages"
+    slug = "".join(ch if ch.isalnum() else "-" for ch in hits[0].title.lower()).strip("-")
+    out = Path(args.out) if args.out else (cache.root / "output" / f"Mecha-Assemble-Proxy-Helper_"
+                                           f"{date.today().isoformat()}_{slug}{'-booklet' * args.booklet}.pdf")
+    path, info = rulesdocs.build_pdf(src, out, paper=args.paper, layout=layout, log=print,
+                                     mode="manual" if args.manual else "duplex", reverse=args.reverse, guide=not args.no_guide)
+    print(rulesdocs.how_to_print(info))
+    for f in info["files"]:
+        print(f"wrote {f}")
+    return 0
+
+
+def cmd_debug_info(args) -> int:
+    from . import debuginfo
+    print(debuginfo.collect(_open_cache(args)), end="")
+    print(f"\nReport a problem: {debuginfo.ISSUE_URL}")
+    return 0
+
+
 def cmd_site_check(args) -> int:
     from . import sitecheck
     cache = _open_cache(args)
@@ -395,12 +449,14 @@ def build_parser() -> argparse.ArgumentParser:
     ai.add_argument("--preset", choices=["ultramix", "official"], default="ultramix")
     ai.set_defaults(func=cmd_ai)
 
-    sc = sub.add_parser("scenarios", help="Bandai's scenario PDFs: update / list / build a Letter PDF")
+    sc = sub.add_parser("scenarios", help="Bandai's scenario PDFs: update / list / build a printable PDF")
     sc.add_argument("action", choices=["update", "list", "build"])
     sc.add_argument("--only", help="build: scenarios whose title contains any of these words, comma separated")
     sc.add_argument("--goal-cards", action="store_true",
                     help="build: add a page with two copies of each goal card (88 x 63 mm)")
     sc.add_argument("--out", help="build: output PDF path")
+    sc.add_argument("--paper", choices=list(config.PAPER_SIZES), default=config.DEFAULT_PAPER,
+                    help="build: paper size (default: letter)")
     sc.set_defaults(func=cmd_scenarios)
 
     en = sub.add_parser("enhance", help="AI-enhance downloaded cards into cards-enhanced/ (originals untouched)")
@@ -412,6 +468,22 @@ def build_parser() -> argparse.ArgumentParser:
                     help="store as JPEG 95%% at 400 DPI print size instead of the full lossless output")
     en.add_argument("--force", action="store_true", help="redo cards that are already enhanced")
     en.set_defaults(func=cmd_enhance)
+
+    ru = sub.add_parser("rules", help="Bandai's rule documents: list / get the latest / build a printable PDF")
+    ru.add_argument("action", choices=["list", "get", "build"])
+    ru.add_argument("--doc", help="get/build: part of the document's title, e.g. core")
+    ru.add_argument("--booklet", action="store_true", help="build: fold-in-half booklet instead of full pages")
+    ru.add_argument("--paper", choices=list(config.PAPER_SIZES), default=config.DEFAULT_PAPER,
+                    help="build: paper size (default: letter)")
+    ru.add_argument("--manual", action="store_true",
+                    help="booklet: no double-sided printer - write _fronts and _backs files to print one after the other")
+    ru.add_argument("--reverse", action="store_true", help="booklet, manual: backs file in reverse order")
+    ru.add_argument("--no-guide", action="store_true", help="booklet: leave out the assembly guide sheet")
+    ru.add_argument("--out", help="build: output PDF path")
+    ru.set_defaults(func=cmd_rules)
+
+    di = sub.add_parser("debug-info", help="print versions and settings to paste into a bug report")
+    di.set_defaults(func=cmd_debug_info)
 
     chk = sub.add_parser("site-check", help="check that Bandai's site still parses (used by the weekly CI check)")
     chk.add_argument("--baseline", help="counts JSON from the last good check; a drop of more than 20%% is reported")
@@ -446,6 +518,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--spacing", type=float, default=0.0,
                         help="white space between cards in mm (0 = cards touch, shared cut lines)")
         sp.add_argument("--margin", type=float, default=5.0, help="unprintable page margin in mm")
+        sp.add_argument("--paper", choices=list(config.PAPER_SIZES), default=config.DEFAULT_PAPER,
+                        help="paper size (default: letter)")
 
     b = sub.add_parser("build", help="make printable PDF sheets")
     sizing(b)

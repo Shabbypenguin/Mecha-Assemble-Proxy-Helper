@@ -168,6 +168,10 @@ def test_print_dialog_preview_and_prefs(app, home):
     assert dlg.reverse.isEnabled()
     dlg.which.setCurrentIndex(1)  # tactics preview: bleed 3 -> 6 per sheet, rotated
     assert "6 per sheet" in dlg.info.text() and "rotated" in dlg.info.text()
+    assert dlg.info.text().startswith("US Letter")
+    dlg.paper.setCurrentIndex(dlg.paper.findData("a4"))  # taller page: a 4th row of rotated cards fits
+    assert dlg.info.text().startswith("A4") and "8 per sheet" in dlg.info.text()
+    assert dlg.result_prefs()["paper"] == "a4" and dlg.settings("tactics").page_mm == (210.0, 297.0)
     for topic in print_dialog.CAPTIONS:  # every diagram paints without error
         dlg._topic(topic)
         dlg.diagram.grab()
@@ -232,7 +236,7 @@ def test_hover_preview_size_capped(app, home):
 def test_menus_and_sidebar(app, home):
     w = gui.MainWindow(str(home))
     titles = [a.text() for a in w.menuBar().actions()]
-    assert titles == ["&File", "&Cards", "&Enhance", "&Help"]
+    assert titles == ["&File", "&Cards", "&Enhance", "&Rules", "&Help"]
     cards_menu = w.menuBar().actions()[1].menu()
     names = [a.text() for a in cards_menu.actions() if a.text()]
     assert any("Update cards" in n for n in names) and any("Calibration" in n for n in names)
@@ -481,10 +485,14 @@ def test_scenarios_tab(app, home, monkeypatch, tmp_path):
     assert not w.scen_panel.btn_save.isEnabled()
     rows[0].check.setChecked(True)
     rows[2].check.setChecked(True)
-    assert "2 scenarios selected → 6 Letter pages" in w.scen_panel.summary.text()
+    assert "2 scenarios selected → 6 US Letter pages" in w.scen_panel.summary.text()
     w.scen_panel.goal_cards.setChecked(False)
-    assert "→ 4 Letter pages" in w.scen_panel.summary.text() and w.prefs["scen_goal_cards"] is False
+    assert "→ 4 US Letter pages" in w.scen_panel.summary.text() and w.prefs["scen_goal_cards"] is False
     w.scen_panel.goal_cards.setChecked(True)
+    # paper is one shared setting: changing it here is what the print dialog will use too
+    w.scen_panel.paper.setCurrentIndex(w.scen_panel.paper.findData("a4"))
+    assert w.prefs["paper"] == "a4" and "6 A4 pages" in w.scen_panel.summary.text()
+    assert w.settings("unit").paper == "a4"
 
     out = tmp_path / "scen.pdf"
     monkeypatch.setattr(w, "_ask_output", lambda *a, **k: out)
@@ -493,9 +501,107 @@ def test_scenarios_tab(app, home, monkeypatch, tmp_path):
         w.task.wait(20000)
         app.processEvents()
     app.processEvents()
-    assert len(PdfReader(str(out)).pages) == 6
-    assert shown and "88 × 63 mm" in shown[-1]
+    reader = PdfReader(str(out))
+    assert len(reader.pages) == 6
+    assert round(float(reader.pages[0].mediabox.width)) == 595  # A4: 210 mm
+    assert shown and "88 × 63 mm" in shown[-1] and "A4 paper" in shown[-1]
+    # ...and a change in the print dialog shows up here
+    w.prefs["paper"] = "letter"
+    w._scen_sync_paper()
+    assert w.scen_panel.paper.currentData() == "letter"
 
     w.tabs.setCurrentIndex(0)
     assert w.card_controls.isVisibleTo(w)
+    w.close()
+
+
+def test_rules_menu(app, home, monkeypatch, tmp_path):
+    from pypdf import PdfReader
+
+    from mecha_proxy import gui_rules, rulesdocs
+    from mecha_proxy.cache import Cache
+
+    from .test_rules import _site, make_doc
+    from .test_scenarios import _Sess
+    routes = _site(make_doc(tmp_path / "d.pdf", pages=6).read_bytes())
+    Cache(home, session=_Sess(routes), delay_s=0, log=lambda *a: None)
+    w = gui.MainWindow(str(home))
+    w.cache.session = _Sess(routes)
+    w.cache.delay_s = 0
+    names = lambda: [a.text() for a in w.menu_rules.actions() if a.text()]  # noqa: E731
+    assert names()[0].startswith("No documents listed yet")
+    w.refresh_rules_list()
+    while w.task is not None:
+        w.task.wait(20000)
+        app.processEvents()
+    w._fill_rules_menu()
+    assert names()[:2] == ["Sample Rulebook…", "Sample Play Guide…"]  # coming-soon entries left out
+
+    # pick a document: dialog says A4 + booklet; both remembered, paper shared with the other screens
+    def fake_exec(dlg):
+        assert dlg.booklet_box.isHidden()            # booklet options only for the booklet layout
+        dlg.paper.setCurrentIndex(dlg.paper.findData("a4"))
+        dlg.radios["booklet"].setChecked(True)
+        assert not dlg.booklet_box.isHidden() and dlg.reverse.isHidden()  # reverse: manual printing only
+        dlg.mode.setCurrentIndex(dlg.mode.findData("manual"))
+        assert not dlg.reverse.isHidden() and "How to assemble" in dlg.help.text()
+        return gui_rules.QDialog.Accepted
+    monkeypatch.setattr(gui_rules.RulesDialog, "exec", fake_exec)
+    shown = []
+    monkeypatch.setattr(gui_rules.QMessageBox, "exec", lambda box: shown.append(box.text()) or 0)
+    out = tmp_path / "rules.pdf"
+    monkeypatch.setattr(w, "_ask_output", lambda *a, **k: out)
+    w.open_rules_doc("SAMPLE RULEBOOK")
+    while w.task is not None:
+        w.task.wait(20000)
+        app.processEvents()
+    app.processEvents()
+    assert w.prefs["paper"] == "a4" and w.prefs["rules_layout"] == "booklet"
+    assert w.scen_panel.paper.currentData() == "a4"
+    assert w.prefs["rules_mode"] == "manual" and w.prefs["rules_guide"] is True
+    fronts = PdfReader(str(out.with_name("rules_fronts.pdf"))).pages
+    assert len(fronts) == 3 and round(float(fronts[0].mediabox.width)) == 842  # guide + 2 A4 sheets, landscape
+    assert len(PdfReader(str(out.with_name("rules_backs.pdf"))).pages) == 3
+    assert shown and "Booklet: 2 A4 sheets" in shown[-1] and "Downloaded the latest" in shown[-1]
+    assert "rules_fronts.pdf" in shown[-1] and "assembly guide" in shown[-1]
+    assert rulesdocs.local_copy(w.cache, "SAMPLE RULEBOOK") is not None
+    w.close()
+
+
+def test_debug_info_and_failure_capture(app, home, monkeypatch):
+    shown = []
+    monkeypatch.setattr(gui.QMessageBox, "critical", lambda *a: shown.append(a[2]))
+    monkeypatch.setattr(gui.QMessageBox, "exec", lambda box: 0)
+    w = gui.MainWindow(str(home))
+
+    def explode(task):
+        task.log("halfway there")
+        raise RuntimeError("sample failure")
+    w._start(explode, lambda r: None, "Doing a thing…")
+    while w.task is not None:
+        w.task.wait(20000)
+        app.processEvents()
+    app.processEvents()
+    assert shown and "sample failure" in shown[-1] and "Copy debug info" in shown[-1]
+    assert "Traceback" in w._last_error and "RuntimeError: sample failure" in w._last_error
+    w.copy_debug_info()
+    text = gui.QApplication.clipboard().text()
+    assert text.startswith("### Debug info") and "sample failure" in text
+    assert "Doing a thing…" in text and "halfway there" in text
+    names = [a.text() for a in w.menuBar().actions()[-1].menu().actions()]
+    assert "Copy &debug info" in names
+    w.close()
+
+
+def test_links_open_through_qt(app, home, monkeypatch):
+    opened = []
+    monkeypatch.setattr(gui, "open_url", opened.append)
+    monkeypatch.setattr(gui.QMessageBox, "exec", lambda box: [b.click() for b in box.buttons()
+                                                              if b.text().startswith("Report")] and 0)
+    w = gui.MainWindow(str(home))
+    help_menu = w.menuBar().actions()[-1].menu()
+    next(a for a in help_menu.actions() if a.text() == "Open &project page").trigger()
+    w.copy_debug_info()
+    from mecha_proxy import debuginfo
+    assert opened == [gui.config.REPO_URL, debuginfo.ISSUE_URL]
     w.close()

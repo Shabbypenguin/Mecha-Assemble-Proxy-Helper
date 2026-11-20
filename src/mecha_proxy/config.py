@@ -22,6 +22,19 @@ REQUEST_DELAY_S = 0.5  # politeness delay between network requests
 TIMEOUT_S = 30
 
 LETTER_MM = (215.9, 279.4)
+A4_MM = (210.0, 297.0)
+PAPER_SIZES: dict[str, tuple[str, tuple[float, float]]] = {"letter": ("US Letter", LETTER_MM),
+                                                          "a4": ("A4", A4_MM)}
+DEFAULT_PAPER = "letter"
+
+
+def paper_mm(key: str | None) -> tuple[float, float]:
+    """Page size in mm for a paper key ("letter" / "a4"); unknown keys fall back to Letter."""
+    return PAPER_SIZES.get(key or DEFAULT_PAPER, PAPER_SIZES[DEFAULT_PAPER])[1]
+
+
+def paper_label(key: str | None) -> str:
+    return PAPER_SIZES.get(key or DEFAULT_PAPER, PAPER_SIZES[DEFAULT_PAPER])[0]
 MM_PER_PT = 25.4 / 72.0
 
 
@@ -46,13 +59,13 @@ class CardType:
 CARD_TYPES: dict[str, CardType] = {
     "unit": CardType(
         key="unit",
-        width_mm=148.0,
-        height_mm=105.0,
+        width_mm=148.5,
+        height_mm=105.25,
         list_path="unitlist/?search=&tag=all&view=card&category=all",
         img_section="unitlist",
         code_pattern=r"^[a-z]{2}\d{2}-u\d{2,3}$",
         front_variant=True,
-        size_note="A6 landscape, community-reported; matches image aspect 800x567. Unconfirmed.",
+        size_note="Measured from a real card (148.5 x 105.25 mm); matches image aspect 800x567.",
         label="Unit cards",
         stats=("hp", "vp", "tl"),
     ),

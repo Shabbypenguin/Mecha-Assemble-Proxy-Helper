@@ -37,6 +37,7 @@ class PrintJob:
     flip: str = "long"
     back_offset: tuple[float, float] = (0.0, 0.0)  # mm, shifts every back page
     crop_marks: bool = True
+    paper: tuple[float, float] = config.LETTER_MM  # page size, mm
 
 
 # ---- image prep ---------------------------------------------------------------
@@ -135,8 +136,8 @@ def _draw_footer(c: rl_canvas.Canvas, g: Grid, text: str) -> None:
     c.restoreState()
 
 
-def _new_canvas(path: Path) -> rl_canvas.Canvas:
-    pw, ph = config.LETTER_MM
+def _new_canvas(path: Path, page_mm: tuple[float, float] = config.LETTER_MM) -> rl_canvas.Canvas:
+    pw, ph = page_mm
     c = rl_canvas.Canvas(str(path), pagesize=(pw * mm, ph * mm))
     c.setTitle(path.stem)
     c.setCreator("Mecha-Assemble-Proxy-Helper")
@@ -153,7 +154,7 @@ def build(job: PrintJob, mode: str, out: Path, work_dir: Path,
     if not job.fronts:
         raise ValueError("no cards selected")
 
-    pw, ph = config.LETTER_MM
+    pw, ph = job.paper
     g = fit_grid(pw, ph, job.card_w, job.card_h, bleed=job.bleed, margin=job.margin, gap=job.gap)
     fronts_slots, backs_slots = g.front_slots(), g.back_slots(job.flip)
     log(f"layout: {g.cols}x{g.rows} = {g.per_page} per sheet"
@@ -194,14 +195,14 @@ def build(job: PrintJob, mode: str, out: Path, work_dir: Path,
     out.parent.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     if mode == "duplex":
-        c = _new_canvas(out)
+        c = _new_canvas(out, job.paper)
         for imgs in pages:
             draw_front_page(c, imgs)
             draw_back_page(c, len(imgs))
         c.save()
         written.append(out)
     elif mode == "single":
-        c = _new_canvas(out)
+        c = _new_canvas(out, job.paper)
         for imgs in pages:
             draw_front_page(c, imgs)
         c.save()
@@ -209,11 +210,11 @@ def build(job: PrintJob, mode: str, out: Path, work_dir: Path,
     else:  # split
         f_path = out.with_name(out.stem + "_fronts.pdf")
         b_path = out.with_name(out.stem + "_backs.pdf")
-        c = _new_canvas(f_path)
+        c = _new_canvas(f_path, job.paper)
         for imgs in pages:
             draw_front_page(c, imgs)
         c.save()
-        c = _new_canvas(b_path)
+        c = _new_canvas(b_path, job.paper)
         order = list(reversed(pages)) if reverse_backs else pages
         for imgs in order:
             draw_back_page(c, len(imgs))
@@ -225,16 +226,17 @@ def build(job: PrintJob, mode: str, out: Path, work_dir: Path,
 
 def build_calibration(card_w: float, card_h: float, out: Path, bleed: float = 0.0, gap: float = 0.0,
                       margin: float = 5.0, flip: str = "long",
-                      back_offset: tuple[float, float] = (0.0, 0.0)) -> Path:
+                      back_offset: tuple[float, float] = (0.0, 0.0),
+                      paper: tuple[float, float] = config.LETTER_MM) -> Path:
     """Two-page test sheet: numbered outlines + crosshairs on both sides.
 
     Print it the way you'll print cards, hold it up to a light: outlines and
     crosshairs should line up, and each number should be behind itself.
     """
-    pw, ph = config.LETTER_MM
+    pw, ph = paper
     g = fit_grid(pw, ph, card_w, card_h, bleed=bleed, margin=margin, gap=gap)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
-    c = _new_canvas(Path(out))
+    c = _new_canvas(Path(out), paper)
 
     def page(slots, title, offset=(0.0, 0.0)):
         dx, dy = offset

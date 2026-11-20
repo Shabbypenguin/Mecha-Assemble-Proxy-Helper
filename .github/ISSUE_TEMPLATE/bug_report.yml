@@ -1,0 +1,31 @@
+name: Bug report
+description: Something doesn't work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please don't attach card images or Bandai's PDFs – describe the problem instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: "I picked Rules → Core Rule → Booklet and the save failed with …"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce (if you know them)
+      placeholder: |
+        1. …
+        2. …
+  - type: textarea
+    id: debug
+    attributes:
+      label: Debug info
+      description: In the app, Help → Copy debug info, then paste here (command line - `mecha-proxy debug-info`). It has versions, settings and recent activity; your user name is already replaced by <user>.
+      render: text
+    validations:
+      required: true

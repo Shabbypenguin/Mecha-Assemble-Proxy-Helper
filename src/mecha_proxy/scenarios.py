@@ -1,9 +1,9 @@
-"""Scenarios: Bandai's scenario PDFs, kept offline and reflowed for US Letter printing.
+"""Scenarios: Bandai's scenario PDFs, kept offline and reflowed for US Letter or A4 printing.
 
 Bandai publishes each scenario as one wide page: a two-page rulebook spread (A3 landscape,
 two A4 pages side by side). For printing, each spread is split down the middle into two
-Letter pages, scaled to fit inside a 5 mm margin (about 91%; Bandai's pages are printed edge to
-edge, which home printers can't do), keeping the original text and artwork as they are.
+Letter or A4 pages, scaled to fit inside a 5 mm margin (about 91% on Letter, 95% on A4; Bandai's
+pages are printed edge to edge, which home printers can't do), keeping the original text and artwork as they are.
 
 The scenario goal card is printed inside the spread, at a different scale in each PDF and
 sometimes with no text layer at all (text converted to outlines). Optionally it is cut out
@@ -32,6 +32,11 @@ from .cache import atomic_write
 LIST_PATH = "rules-qa/scenario/"
 MM = 72 / 25.4
 LETTER = (215.9 * MM, 279.4 * MM)
+
+
+def page_points(paper: str | None) -> tuple[float, float]:
+    w, h = config.paper_mm(paper)
+    return (w * MM, h * MM)
 
 # The goal card's red ribbon starts at the card's top-left corner and covers 55.9% of the card
 # height; the card has 88:63 proportions (measured on Sleeping Leviathan at 97% scale and
@@ -233,7 +238,7 @@ def new_on_site(cache) -> list[str]:
     return [s.title for s in fetch_list(cache) if s.available and s.url not in have]
 
 
-# ---- Letter PDF ---------------------------------------------------------------------------------
+# ---- printable PDF ---------------------------------------------------------------------------------
 def _clip(page, rect: tuple[float, float, float, float]) -> None:
     """Restrict everything already drawn on page to rect (x0, y0, x1, y1), in points."""
     from pypdf.generic import ContentStream, FloatObject
@@ -247,12 +252,12 @@ def _clip(page, rect: tuple[float, float, float, float]) -> None:
     page.replace_contents(new)
 
 
-def _placed(src, src_rect, dst_xy, scale):
-    """A Letter page showing src_rect of src page at dst_xy (lower-left), scaled, clipped."""
+def _placed(src, src_rect, dst_xy, scale, size=LETTER):
+    """A blank page of size (points) showing src_rect of src page at dst_xy (lower-left), scaled, clipped."""
     from pypdf import PageObject, Transformation
     x0, y0, x1, y1 = src_rect
     dx, dy = dst_xy
-    tmp = PageObject.create_blank_page(width=LETTER[0], height=LETTER[1])
+    tmp = PageObject.create_blank_page(width=size[0], height=size[1])
     tmp.merge_transformed_page(src, Transformation().translate(-x0, -y0).scale(scale, scale).translate(dx, dy))
     _clip(tmp, (dx, dy, dx + (x1 - x0) * scale, dy + (y1 - y0) * scale))
     return tmp
@@ -366,12 +371,12 @@ def thumbnail(pdf_path: Path, out: Path, width: int = 360) -> Path | None:
         return None
 
 
-def _crop_marks_page(cards: list[tuple[float, float, float, float]]):
+def _crop_marks_page(cards: list[tuple[float, float, float, float]], size=LETTER):
     """Transparent overlay page with crop marks around each card rect (points)."""
     from pypdf import PdfReader
     from reportlab.pdfgen import canvas
     buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=LETTER)
+    c = canvas.Canvas(buf, pagesize=size)
     c.setLineWidth(0.3)
     gap, ln = 1.0 * MM, 5.0 * MM
     for x0, y0, x1, y1 in cards:
@@ -382,17 +387,18 @@ def _crop_marks_page(cards: list[tuple[float, float, float, float]]):
             c.line(x0 - gap, y, x0 - gap - ln, y)
             c.line(x1 + gap, y, x1 + gap + ln, y)
     c.setFont("Helvetica", 7)
-    c.drawCentredString(LETTER[0] / 2, 12 * MM, "Scenario goal cards - one per player. Print at 100% / Actual size.")
+    c.drawCentredString(size[0] / 2, 12 * MM, "Scenario goal cards - one per player. Print at 100% / Actual size.")
     c.showPage()
     c.save()
     buf.seek(0)
     return PdfReader(buf).pages[0]
 
 
-def build_letter_pdf(sources: list[Path], out: Path, goal_cards: bool = False,
-                     log=print) -> tuple[Path, list[str]]:
-    """Letter PDF of the given scenario PDFs. Returns (path, notes for the user)."""
+def build_pdf(sources: list[Path], out: Path, goal_cards: bool = False, log=print,
+              paper: str = config.DEFAULT_PAPER) -> tuple[Path, list[str]]:
+    """Printable PDF (US Letter or A4) of the given scenario PDFs. Returns (path, notes for the user)."""
     from pypdf import PageObject, PdfReader, PdfWriter
+    size = page_points(paper)
     writer = PdfWriter()
     notes = []
     for src in sources:
@@ -401,10 +407,10 @@ def build_letter_pdf(sources: list[Path], out: Path, goal_cards: bool = False,
         for index, page in enumerate(reader.pages):
             for rect in page_halves(page):
                 w, h = rect[2] - rect[0], rect[3] - rect[1]
-                s = min((LETTER[0] - 2 * PRINT_MARGIN) / w, (LETTER[1] - 2 * PRINT_MARGIN) / h)
-                dst = ((LETTER[0] - w * s) / 2, (LETTER[1] - h * s) / 2)
-                out_page = PageObject.create_blank_page(width=LETTER[0], height=LETTER[1])
-                out_page.merge_page(_placed(page, rect, dst, s))
+                s = min((size[0] - 2 * PRINT_MARGIN) / w, (size[1] - 2 * PRINT_MARGIN) / h)
+                dst = ((size[0] - w * s) / 2, (size[1] - h * s) / 2)
+                out_page = PageObject.create_blank_page(width=size[0], height=size[1])
+                out_page.merge_page(_placed(page, rect, dst, s, size))
                 writer.add_page(out_page)
             if goal_cards and card is None:
                 found = find_goal_card(Path(src), index)
@@ -417,14 +423,14 @@ def build_letter_pdf(sources: list[Path], out: Path, goal_cards: bool = False,
             page, rect = card
             s = GOAL_CARD_PRINT_MM[0] * MM / (rect[2] - rect[0])
             cw, ch = (rect[2] - rect[0]) * s, (rect[3] - rect[1]) * s
-            x = (LETTER[0] - cw) / 2
+            x = (size[0] - cw) / 2
             gap = 25 * MM
-            y_top = (LETTER[1] + gap) / 2
-            y_bot = (LETTER[1] - gap) / 2 - ch
-            sheet = PageObject.create_blank_page(width=LETTER[0], height=LETTER[1])
+            y_top = (size[1] + gap) / 2
+            y_bot = (size[1] - gap) / 2 - ch
+            sheet = PageObject.create_blank_page(width=size[0], height=size[1])
             for y in (y_top, y_bot):
-                sheet.merge_page(_placed(page, rect, (x, y), s))
-            sheet.merge_page(_crop_marks_page([(x, y_top, x + cw, y_top + ch), (x, y_bot, x + cw, y_bot + ch)]))
+                sheet.merge_page(_placed(page, rect, (x, y), s, size))
+            sheet.merge_page(_crop_marks_page([(x, y_top, x + cw, y_top + ch), (x, y_bot, x + cw, y_bot + ch)], size))
             writer.add_page(sheet)
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -433,5 +439,8 @@ def build_letter_pdf(sources: list[Path], out: Path, goal_cards: bool = False,
     with open(tmp, "wb") as f:
         writer.write(f)
     tmp.replace(out)
-    log(f"scenario PDF: {len(writer.pages)} Letter page(s) -> {out}")
+    log(f"scenario PDF: {len(writer.pages)} {config.paper_label(paper)} page(s) -> {out}")
     return out, notes
+
+
+build_letter_pdf = build_pdf  # 0.7 name

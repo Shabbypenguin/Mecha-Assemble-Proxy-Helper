@@ -1,8 +1,9 @@
 """Check that Bandai's site still looks the way the scraper expects.
 
 Run weekly by .github/workflows/site-check.yml (and by hand with `mecha-proxy site-check`).
-It reads every card list page, a few card details, a few images and the scenario list, and
-reports anything that no longer parses. Nothing is downloaded in bulk: ~20-30 requests total.
+It reads every card list page, a few card details, a few images, the scenario and rules lists
+(plus a peek at each PDF), and reports anything that no longer parses. Nothing is downloaded in
+bulk: ~30 requests total.
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, config, scenarios, scraper
+from . import __version__, config, rulesdocs, scenarios, scraper
 
 SAMPLES = 3          # card details / images checked per card type
 MAX_DROP = 0.20      # a count falling by more than this since last time is reported
@@ -132,6 +133,30 @@ def _check_scenarios(cache, result: Result, log) -> None:
             result.problems.append(f"scenario {sc.title}: link no longer points to a PDF ({sc.url})")
 
 
+def _check_rules(cache, result: Result, log) -> None:
+    try:
+        docs = rulesdocs.fetch_list(cache)
+    except Exception as exc:  # noqa: BLE001
+        result.problems.append(f"rules: list page didn't load ({_short(exc)})")
+        return
+    available = [d for d in docs if d.available]
+    if not available:
+        result.problems.append("rules: list page has no downloadable documents - the page layout may have changed")
+        return
+    result.counts["rules"] = len(available)
+    log(f"rules: {len(docs)} listed, {len(available)} available")
+    for d in available:
+        try:
+            status, _, head = _peek(cache, d.url)
+        except Exception as exc:  # noqa: BLE001
+            result.problems.append(f"rules {d.title}: PDF request failed ({_short(exc)})")
+            continue
+        if status >= 400:
+            result.problems.append(f"rules {d.title}: PDF returned HTTP {status} ({d.url})")
+        elif not head.startswith(b"%PDF"):
+            result.problems.append(f"rules {d.title}: link no longer points to a PDF ({d.url})")
+
+
 def _check_drops(result: Result) -> None:
     for key, before in sorted(result.baseline.items()):
         now = result.counts.get(key)
@@ -148,6 +173,7 @@ def run(cache, baseline: dict | None = None, log=print) -> Result:
     for ctype in config.CARD_TYPES.values():
         _check_cards(cache, ctype, result, log)
     _check_scenarios(cache, result, log)
+    _check_rules(cache, result, log)
     _check_drops(result)
     return result
 

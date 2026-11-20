@@ -66,6 +66,11 @@ def full_update(cache: Cache, log: LogFn = print, on_step: StepFn | None = None,
             scenarios.update(cache, log=log, on_step=on_step, should_stop=should_stop)
         except Exception as exc:  # noqa: BLE001
             log(f"warning: couldn't update scenarios ({exc})")
+        from . import rulesdocs
+        try:  # just the list for the Rules menu; documents download when picked
+            rulesdocs.refresh_list(cache)
+        except Exception as exc:  # noqa: BLE001
+            log(f"warning: couldn't read the rules list ({exc})")
     return manifest, missing, sorted(changed)
 
 
@@ -228,6 +233,7 @@ class PrintSettings:
     enhanced: bool = False                        # use AI-enhanced images where they exist
     sharpness: str = "400"                        # enhanced print size: "300" | "400" | "max"
     small_pdf: bool = False                       # enhanced images as JPEG 95% instead of lossless
+    paper: str = config.DEFAULT_PAPER             # "letter" | "a4"
     extra: dict = field(default_factory=dict)
 
     @property
@@ -238,10 +244,14 @@ class PrintSettings:
     def card_size(self) -> tuple[float, float]:
         return self.size or config.CARD_TYPES[self.card_type].size_mm
 
+    @property
+    def page_mm(self) -> tuple[float, float]:
+        return config.paper_mm(self.paper)
+
 
 def per_sheet(settings: PrintSettings) -> int:
     w, h = settings.card_size
-    return fit_grid(*config.LETTER_MM, w, h, bleed=settings.bleed, margin=settings.margin,
+    return fit_grid(*settings.page_mm, w, h, bleed=settings.bleed, margin=settings.margin,
                     gap=settings.gap).per_page
 
 
@@ -291,7 +301,7 @@ def make_pdf(cache: Cache, selection: list[tuple[scraper.Card, int]], found: dic
     w, h = s.card_size
     job = pdf.PrintJob(fronts=fronts, labels=labels, card_w=w, card_h=h, back=resolve_back(cache, s),
                        bleed=s.bleed, gap=s.gap, margin=s.margin, flip=s.flip, back_offset=s.back_offset,
-                       crop_marks=s.crop_marks)
+                       crop_marks=s.crop_marks, paper=s.page_mm)
     written = pdf.build(job, s.mode, Path(out), cache.processed_dir, reverse_backs=s.reverse_backs, log=log)
     record_printed(cache, [card.code for card, _ in selection if card.code in found])
     return written
@@ -333,4 +343,4 @@ def output_paths(base: Path, types: list[str]) -> dict[str, Path]:
 def make_calibration(s: PrintSettings, out: Path) -> Path:
     w, h = s.card_size
     return pdf.build_calibration(w, h, Path(out), bleed=s.bleed, gap=s.gap, margin=s.margin, flip=s.flip,
-                                 back_offset=s.back_offset)
+                                 back_offset=s.back_offset, paper=s.page_mm)

@@ -38,9 +38,9 @@ jobs:
           - os: macos-15-intel      # GitHub offers Intel Macs until fall 2027
             label: macos-intel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -99,7 +99,7 @@ jobs:
           ditto -c -k --keepParent "dist/Mecha-Assemble-Proxy-Helper.app" \
             "dist/Mecha-Assemble-Proxy-Helper-v${{ steps.version.outputs.version }}-${{ matrix.label }}.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.label }}
           path: dist/*.zip
@@ -113,9 +113,9 @@ jobs:
     permissions:
       contents: write           # create the draft release and upload the zips
     steps:
-      - uses: actions/checkout@v4   # gh needs the repo context
+      - uses: actions/checkout@v7   # gh needs the repo context
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: zips
           merge-multiple: true

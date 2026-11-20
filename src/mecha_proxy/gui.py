@@ -9,7 +9,8 @@ import json
 import os
 import subprocess
 import sys
-from collections import Counter
+from collections import Counter, deque
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QSize, Qt, QThread, QTimer, Signal
@@ -23,6 +24,7 @@ from . import __version__, config, deckcode, enhance, filters, scenarios, scrape
 from .cache import atomic_write
 from .gui_ai import AiMixin
 from .gui_deck import PasteDeckDialog
+from .gui_rules import RulesMixin
 from .gui_scen import ScenarioMixin
 from .print_dialog import PrintDialog, settings_from_prefs
 from .widgets import ChipBox, HoverPreview, RangeBox
@@ -45,7 +47,10 @@ DEFAULT_PREFS = {"mode": "duplex", "flip": "long", "bleed": 0.0, "gap": 0.0, "of
                  "small_pdf": False,
                  "changes_ack": "",
                  "skip_app_version": "",
-                 "scen_goal_cards": True}  # app update the user already opened (don't nag again)  # newest Bandai card change the user has already looked at
+                 "scen_goal_cards": True,
+                 "paper": "letter",
+                 "rules_layout": "pages", "rules_mode": "duplex",
+                 "rules_reverse": False, "rules_guide": True}  # app update the user already opened (don't nag again)  # newest Bandai card change the user has already looked at
 CHECK_INTERVAL_S = 24 * 3600   # look for new cards on the site at most once a day
 BANNER_BG, BANNER_FG = "#2C52B3", "#FFFFFF"
 
@@ -105,6 +110,14 @@ def app_icon() -> QIcon:
     return QIcon()
 
 
+def open_url(url: str) -> None:
+    """Open a web page in the default browser (Qt's way: Python's webbrowser module doesn't work
+    reliably from the packaged Windows app)."""
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+    QDesktopServices.openUrl(QUrl(url))
+
+
 def open_in_file_manager(path: Path) -> None:
     if sys.platform.startswith("win"):
         os.startfile(path)  # noqa: S606 - our own folder
@@ -159,6 +172,7 @@ class Task(QThread):
         super().__init__(parent)
         self._fn = fn
         self._stop = False
+        self.traceback = ""
 
     def step(self, label, status, done, total):
         self.stepped.emit(label, status, done, total)
@@ -177,6 +191,8 @@ class Task(QThread):
         try:
             self.finished_ok.emit(self._fn(self))
         except Exception as exc:  # noqa: BLE001 - surfaced to the user in a dialog
+            import traceback
+            self.traceback = traceback.format_exc()   # for Help → Copy debug info
             self.failed.emit(str(exc) or exc.__class__.__name__)
 
 
@@ -627,7 +643,7 @@ class CardTab(QWidget):
 
 
 # ---- main window ----------------------------------------------------------------
-class MainWindow(ScenarioMixin, AiMixin, QMainWindow):
+class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
     def __init__(self, home: str | None = None):
         super().__init__()
         self.setWindowTitle(f"{APP_TITLE} {__version__}")
@@ -762,10 +778,13 @@ class MainWindow(ScenarioMixin, AiMixin, QMainWindow):
         cards.addAction("Open cards &folder", lambda: open_in_file_manager(self.cache.images_dir))
 
         self._build_ai_menu(mb)
+        self._build_rules_menu(mb)
 
         help_menu = mb.addMenu("&Help")
         help_menu.addAction("Check for app &updates", lambda: self.check_site(manual=True))
-        help_menu.addAction("Open &project page", lambda: __import__("webbrowser").open(config.REPO_URL))
+        help_menu.addAction("Open &project page", lambda: open_url(config.REPO_URL))
+        help_menu.addAction("Copy &debug info", self.copy_debug_info).setStatusTip(
+            "Copy versions, settings and recent activity to paste into a bug report")
         help_menu.addSeparator()
         help_menu.addAction("&About", self._about)
 
@@ -796,10 +815,8 @@ class MainWindow(ScenarioMixin, AiMixin, QMainWindow):
 
     def open_app_update(self):
         """Open the release page; the banner then stops mentioning this version."""
-        from PySide6.QtCore import QUrl
-        from PySide6.QtGui import QDesktopServices
         version, url = self._app_update
-        QDesktopServices.openUrl(QUrl(url))
+        open_url(url)
         self.prefs["skip_app_version"] = version
         self._save_prefs()
         self.status.setText(f"Opened the download page for version {version}. Download the zip and "
@@ -1123,10 +1140,12 @@ class MainWindow(ScenarioMixin, AiMixin, QMainWindow):
         self.task = Task(fn, self)
         self.task.stepped.connect(self._on_step)
         self.task.logged.connect(self.status.setText)
+        self.task.logged.connect(self._log_activity)
+        self._log_activity(label)
         self.task.finished_ok.connect(on_done)
         self.task.failed.connect(self._on_failed)
         self.task.finished.connect(self._on_task_end)
-        for b in (self.act_update, self.act_print, self.act_cal, self.btn_print, self.menu_ai,
+        for b in (self.act_update, self.act_print, self.act_cal, self.btn_print, self.menu_ai, self.menu_rules,
                   self.btn_import, self.btn_export, self.act_export):
             b.setEnabled(False)
         self.tabs.setEnabled(False)
@@ -1142,8 +1161,34 @@ class MainWindow(ScenarioMixin, AiMixin, QMainWindow):
         self.progress.setValue(done)
         self.status.setText(f"[{done}/{total}] {label}  {status}")
 
+    def _log_activity(self, msg: str):
+        """Recent task messages, kept in memory for Help → Copy debug info."""
+        if not hasattr(self, "_activity"):
+            self._activity = deque(maxlen=200)
+        self._activity.append(f"{datetime.now().strftime('%H:%M:%S')} {msg}")
+
     def _on_failed(self, msg):
-        QMessageBox.critical(self, APP_TITLE, msg)
+        tb = getattr(self.task, "traceback", "") if self.task is not None else ""
+        self._last_error = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {msg}\n{tb}".strip()
+        self._log_activity(f"ERROR: {msg}")
+        QMessageBox.critical(self, APP_TITLE, msg + "\n\nIf this keeps happening, Help → Copy debug info and "
+                             "report it on GitHub.")
+
+    def copy_debug_info(self):
+        from . import debuginfo
+        text = debuginfo.collect(self.cache, self.prefs, list(getattr(self, "_activity", [])),
+                                 getattr(self, "_last_error", None))
+        QApplication.clipboard().setText(text)
+        self.status.setText("Debug info copied to the clipboard")
+        box = QMessageBox(QMessageBox.Information, "Debug info copied",
+                          "<b>Copied to the clipboard.</b><br><br>To report a problem, open a new issue on "
+                          "GitHub, describe what happened and paste this into the <i>Debug info</i> box. It "
+                          "contains versions, settings and recent activity – your user name is replaced by "
+                          "&lt;user&gt; and nothing is sent anywhere by the app.", QMessageBox.Ok, self)
+        report = box.addButton("Report a problem on GitHub", QMessageBox.ActionRole)
+        box.exec()
+        if box.clickedButton() is report:
+            open_url(debuginfo.ISSUE_URL)
 
     def _on_task_end(self):
         self.task = None
@@ -1154,6 +1199,7 @@ class MainWindow(ScenarioMixin, AiMixin, QMainWindow):
         self.act_update.setEnabled(True)
         self.act_cal.setEnabled(True)
         self.menu_ai.setEnabled(True)
+        self.menu_rules.setEnabled(True)
         if self._ai_task:
             self._ai_task = False
             self.refresh_enhanced()
@@ -1211,6 +1257,7 @@ class MainWindow(ScenarioMixin, AiMixin, QMainWindow):
         self.prefs.update(dlg.result_prefs())  # keep non-print prefs (startup check etc.)
         self._save_prefs()
         self._update_summary()
+        self._scen_sync_paper()
         if accepted:
             self.run_build(selections)
 

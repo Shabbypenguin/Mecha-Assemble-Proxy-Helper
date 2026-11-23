@@ -3,7 +3,7 @@
   mecha-proxy update                       refresh card list, download new images
   mecha-proxy list --type unit             show available cards
   mecha-proxy build --type unit --all -o units.pdf
-  mecha-proxy calibrate --type unit -o test.pdf
+  mecha-proxy calibrate -o test.pdf
 """
 from __future__ import annotations
 
@@ -196,10 +196,10 @@ def cmd_calibrate(args) -> int:
     if args.output:
         target = Path(args.output)
     else:
-        target = service.default_output(service.app_home(args.home) / "output", [args.type],
-                                        suffix=f"calibration_{service.TYPE_LABEL[args.type]}")
+        target = service.default_output(service.app_home(args.home) / "output", [], suffix="calibration")
     out = service.make_calibration(_settings(args), target)
-    print(f"wrote {out} - print it like your cards, then hold it up to a light")
+    print(f"wrote {out} - one sheet for every card size (a unit card and two tactics-size cards). Print it "
+          "like your cards, check the 100 mm bar, then hold it up to a light")
     return 0
 
 
@@ -394,6 +394,39 @@ def cmd_rules(args) -> int:
     return 0
 
 
+def cmd_maps(args) -> int:
+    from . import maps
+    cache = _open_cache(args)
+    if args.action == "list":
+        try:
+            listed = maps.refresh_list(cache)
+        except Exception as exc:  # noqa: BLE001 - offline: show the last list
+            listed = maps.saved_list(cache)
+            print(f"note: couldn't reach Bandai's site ({exc}); showing the last list")
+        for m in listed:
+            sizes = ", ".join(f"{config.paper_label(p)} {f.size or '?'}" for p, f in m.files.items())
+            have = ", ".join(config.paper_label(p) for p in m.files if maps.local_pdf(cache, m.title, p))
+            print(f"{m.display:<32} updated {next(iter(m.files.values())).updated or '?':<11} {sizes}"
+                  f"   {'downloaded: ' + have if have else 'not downloaded'}")
+        return 0
+    if args.action == "update":
+        listed, changed = maps.update(cache, args.paper, log=print)
+        print(f"{len(listed)} map(s), {len(changed)} downloaded or updated ({config.paper_label(args.paper)})")
+        return 0
+    if not args.map:
+        sys.exit("choose a map with --map (part of its name, see 'mecha-proxy maps list')")
+    listed = maps.saved_list(cache) or maps.refresh_list(cache)
+    hits = [m for m in listed if args.map.lower() in m.title.lower() or args.map.lower() in m.display.lower()]
+    if len(hits) != 1:
+        sys.exit(f"--map {args.map!r} matches {len(hits)} maps: "
+                 + (", ".join(m.display for m in hits) or "none") + " (see 'mecha-proxy maps list')")
+    path, note = maps.get(cache, hits[0].title, args.paper, log=print)
+    if note:
+        print("note:", note)
+    print(path)
+    return 0
+
+
 def cmd_debug_info(args) -> int:
     from . import debuginfo
     print(debuginfo.collect(_open_cache(args)), end="")
@@ -482,6 +515,13 @@ def build_parser() -> argparse.ArgumentParser:
     ru.add_argument("--out", help="build: output PDF path")
     ru.set_defaults(func=cmd_rules)
 
+    mp = sub.add_parser("maps", help="Bandai's printable maps: list / update (download all) / get one")
+    mp.add_argument("action", choices=["list", "update", "get"])
+    mp.add_argument("--map", help="get: part of the map's name, e.g. leviathan")
+    mp.add_argument("--paper", choices=list(config.PAPER_SIZES), default=config.DEFAULT_PAPER,
+                    help="update/get: paper size (default: letter)")
+    mp.set_defaults(func=cmd_maps)
+
     di = sub.add_parser("debug-info", help="print versions and settings to paste into a bug report")
     di.set_defaults(func=cmd_debug_info)
 
@@ -511,8 +551,11 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--offline", action="store_true")
     ls.set_defaults(func=cmd_list)
 
-    def sizing(sp):
-        sp.add_argument("--type", choices=list(config.CARD_TYPES), required=True)
+    def sizing(sp, card_type: bool = True):
+        if card_type:
+            sp.add_argument("--type", choices=list(config.CARD_TYPES), required=True)
+        else:  # calibration: one sheet covers every card size
+            sp.set_defaults(type="unit")
         sp.add_argument("--size", help="override card size in mm, e.g. 148x105")
         sp.add_argument("--bleed", type=float, default=0.0, help="bleed in mm (0 = none, try 2-3)")
         sp.add_argument("--spacing", type=float, default=0.0,
@@ -551,8 +594,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="output PDF path (default: output/Mecha-Assemble-Proxy-Helper_<date>.pdf)")
     b.set_defaults(func=cmd_build)
 
-    c = sub.add_parser("calibrate", help="print a front/back alignment test sheet")
-    sizing(c)
+    c = sub.add_parser("calibrate", help="print the front/back alignment and scale test sheet (all card sizes)")
+    sizing(c, card_type=False)
     c.add_argument("--flip", choices=["long", "short"], default="long")
     c.add_argument("--back-offset", type=_offset, default=(0.0, 0.0))
     c.add_argument("-o", "--output", help="output PDF path (default: dated name in output/)")

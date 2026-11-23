@@ -53,14 +53,18 @@ python -m pip install -e ".[gui]" && mecha-proxy-gui
   ability names and their text (e.g. `slow`, `mass produced`).
 - **Start printing…** opens print setup with a diagram for each setting and a live
   preview of the first sheet, front and back, then saves the PDF(s).
-- **Update cards** (full update) re-reads the card lists and every card's details and
-  downloads any new images. At startup the app only does a quick check of the list pages for
-  new cards. Settings are remembered between runs.
+- **Update cards** (full update) first asks **what to download**: paper size (US Letter / A4)
+  and Unit cards, Tactics cards, Tokens, Scenarios, Maps. Things you leave out get no tab
+  (files already downloaded are kept), and your choices are remembered for next time. Card lists
+  and details are always refreshed – they're small, and filters and deck lists need them. The
+  same window opens on first launch. At startup the app only does a quick check of the list
+  pages, for the kinds you chose. Settings are remembered between runs.
 - **Cards Bandai changed** (errata): a full update compares every card's details with the
   saved ones. Changed cards get an **↻ Updated** marker (hover it to see what changed), their
   image is re-checked. If a changed card is one you've printed before, a banner offers to select
   those cards for reprinting.
 - **Scenarios** tab: Bandai's scenario PDFs as Letter or A4 pages, with goal cards (see below).
+- **Maps** tab: Bandai's printable maps (see below).
 - **Deck lists**: **Export list** (above Start printing, or *Cards → Export deck list*) copies
   the selected cards from every tab to the clipboard as plain text, one `1x ST01-U02` line per
   card, ready to paste into Discord. **Import list…** opens a box to paste a shared list into;
@@ -73,7 +77,7 @@ python -m pip install -e ".[gui]" && mecha-proxy-gui
 ```
 mecha-proxy update                                   # card list + images (downloads only what's new)
 mecha-proxy list --type unit                         # see card codes
-mecha-proxy calibrate --type unit -o calibrate.pdf   # test your printer's front/back alignment
+mecha-proxy calibrate -o calibrate.pdf               # test your printer's scale and front/back alignment
 mecha-proxy build --type unit --all -o units.pdf     # every unit card, duplex
 ```
 
@@ -101,7 +105,8 @@ printer flips on the short edge, add `--flip short`.
 
 ### Getting front and back to line up
 
-1. Run `mecha-proxy calibrate --type unit -o cal.pdf` and print it the same way you
+1. Run `mecha-proxy calibrate -o cal.pdf` (or *Cards → Calibration sheet…*): one sheet with a
+   unit card and two tactics-size cards (tokens are tactics size) and a 100 mm scale bar. Print it the same way you
    will print cards (duplex, or the split/re-feed method).
 2. Hold it up to a light. Outlines, crosshairs and numbers should sit on top of each other.
 3. If the back is off, measure how far and pass it to `build` and `calibrate`, e.g.
@@ -145,6 +150,21 @@ scenario just gets its two pages.
 
 Command line: `mecha-proxy scenarios update`, `mecha-proxy scenarios list`,
 `mecha-proxy scenarios build --goal-cards [--paper a4] [--only "leviathan,lockdown"] [--out file.pdf]`.
+
+## Maps
+
+The **Maps** tab lists Bandai's printable maps (Data → Enrich gameplay page): the general map
+and one per scenario, each listed once. Bandai publishes every map in an A4 and a US Letter
+version; the app keeps the one for your **Paper** setting (shown on the Maps tab too – it's the
+same setting as everywhere else) and downloads maps with *Update cards* when *Maps* is ticked
+(about 40 MB). New maps are picked up automatically. **Open** opens the map exactly as Bandai
+published it – a set of tiles to print at **100% / Actual size** and put together. The tiles
+run to the edge of the page, so use borderless printing if your printer has it, or trim and
+line them up. If you change paper size later, a map downloads in the new size when you open it.
+Other downloads on that page (such as 3D-printable terrain) aren't maps and are left out.
+
+Command line: `mecha-proxy maps list`, `mecha-proxy maps update [--paper a4]`,
+`mecha-proxy maps get --map leviathan [--paper a4]`.
 
 ## Rules
 

@@ -224,38 +224,78 @@ def build(job: PrintJob, mode: str, out: Path, work_dir: Path,
     return written
 
 
-def build_calibration(card_w: float, card_h: float, out: Path, bleed: float = 0.0, gap: float = 0.0,
-                      margin: float = 5.0, flip: str = "long",
-                      back_offset: tuple[float, float] = (0.0, 0.0),
-                      paper: tuple[float, float] = config.LETTER_MM) -> Path:
-    """Two-page test sheet: numbered outlines + crosshairs on both sides.
+CALIBRATION_SPACING = 8.0  # mm between the test cards, so each outline and number stays clear
 
-    Print it the way you'll print cards, hold it up to a light: outlines and
-    crosshairs should line up, and each number should be behind itself.
+
+def calibration_layout(page_mm: tuple[float, float], spacing: float = CALIBRATION_SPACING
+                       ) -> list[tuple[str, float, float, float, float]]:
+    """Front positions (label, x, y, w, h in mm, origin bottom-left) for the one calibration sheet:
+    a unit card (landscape) on top and two tactics-size cards below – every size the game uses
+    (tokens are tactics size). Centred on the page."""
+    pw, ph = page_mm
+    uw, uh = config.CARD_TYPES["unit"].size_mm
+    tw, th = config.CARD_TYPES["tactics"].size_mm
+    block_h = uh + spacing + th
+    y_top = (ph + block_h) / 2
+    pair_w = 2 * tw + spacing
+    return [("1", (pw - uw) / 2, y_top - uh, uw, uh),
+            ("2", (pw - pair_w) / 2, y_top - block_h, tw, th),
+            ("3", (pw - pair_w) / 2 + tw + spacing, y_top - block_h, tw, th)]
+
+
+def build_calibration(out: Path, bleed: float = 0.0, gap: float = 0.0, margin: float = 5.0,
+                      flip: str = "long", back_offset: tuple[float, float] = (0.0, 0.0),
+                      paper: tuple[float, float] = config.LETTER_MM) -> Path:
+    """Two-page test sheet with one unit card and two tactics-size cards, front and back.
+
+    Print it the way you'll print cards: the 100 mm bar checks the scale, and held up to a light
+    the outlines, crosshairs and numbers on both sides should line up.
     """
     pw, ph = paper
-    g = fit_grid(pw, ph, card_w, card_h, bleed=bleed, margin=margin, gap=gap)
+    cards = calibration_layout(paper, max(CALIBRATION_SPACING, gap + 2 * bleed))
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     c = _new_canvas(Path(out), paper)
+    sizes = {"1": "unit card", "2": "tactics / token", "3": "tactics / token"}
 
-    def page(slots, title, offset=(0.0, 0.0)):
-        dx, dy = offset
+    def page(title: str, back: bool):
+        dx, dy = back_offset if back else (0.0, 0.0)
         c.setLineWidth(0.6)
-        for i, s in enumerate(slots, 1):
-            x, y = s.x + dx, s.y + dy
-            c.rect(x * mm, y * mm, s.w * mm, s.h * mm)
-            cx, cy = x + s.w / 2, y + s.h / 2
+        for label, x, y, w, h in cards:
+            if back:  # where this card's back lands after turning the sheet over
+                if flip == "long":
+                    x = pw - x - w
+                else:
+                    y = ph - y - h
+            x, y = x + dx, y + dy
+            c.rect(x * mm, y * mm, w * mm, h * mm)
+            if bleed:
+                c.saveState()
+                c.setDash(2, 2)
+                c.setLineWidth(0.3)
+                c.rect((x - bleed) * mm, (y - bleed) * mm, (w + 2 * bleed) * mm, (h + 2 * bleed) * mm)
+                c.restoreState()
+            cx, cy = x + w / 2, y + h / 2
             c.line((cx - 6) * mm, cy * mm, (cx + 6) * mm, cy * mm)
             c.line(cx * mm, (cy - 6) * mm, cx * mm, (cy + 6) * mm)
             c.setFont("Helvetica-Bold", 22)
-            c.drawCentredString(cx * mm, (cy + 9) * mm, str(i))
+            c.drawCentredString(cx * mm, (cy + 9) * mm, label)
+            c.setFont("Helvetica", 8)
+            c.drawCentredString(cx * mm, (cy - 12) * mm, f"{sizes[label]}  {w:g} x {h:g} mm")
         c.setFont("Helvetica", 9)
-        c.drawCentredString(pw / 2 * mm, (ph - margin + 1) * mm if g.y0 + g.block_h < ph - margin - 2
-                            else 3 * mm, title)
-        _draw_crop_marks(c, g)
+        c.drawCentredString(pw / 2 * mm, (ph - margin - 4) * mm, title)
+        if not back:  # scale check: should measure exactly 100 mm
+            y0 = margin + 6
+            x0 = (pw - 100) / 2
+            c.setLineWidth(0.8)
+            c.line(x0 * mm, y0 * mm, (x0 + 100) * mm, y0 * mm)
+            for k in range(11):
+                tick = 3 if k % 5 == 0 else 1.5
+                c.line((x0 + 10 * k) * mm, y0 * mm, (x0 + 10 * k) * mm, (y0 + tick) * mm)
+            c.setFont("Helvetica", 8)
+            c.drawCentredString(pw / 2 * mm, (y0 + 4.5) * mm, "this bar should measure exactly 100 mm")
         c.showPage()
 
-    page(g.front_slots(), "CALIBRATION - FRONT (page 1)")
-    page(g.back_slots(flip), f"CALIBRATION - BACK (page 2, flip on {flip} edge)", back_offset)
+    page("CALIBRATION - FRONT (page 1)", back=False)
+    page(f"CALIBRATION - BACK (page 2, flip on {flip} edge)", back=True)
     c.save()
     return Path(out)

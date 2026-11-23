@@ -253,7 +253,7 @@ def test_update_banner(app, home, monkeypatch):
     # ex01-u01 is in the list but its image isn't downloaded -> banner (no network needed)
     assert not w.banner.isHidden() and "1 card not downloaded yet" in w.banner.text()
 
-    monkeypatch.setattr(service, "new_on_site", lambda cache, manifest: ["EX03-U01", "EX03-U02"])
+    monkeypatch.setattr(service, "new_on_site", lambda cache, manifest, **k: ["EX03-U01", "EX03-U02"])
     w.check_site(manual=True)
     w._checker.wait(10000)
     app.processEvents()
@@ -604,4 +604,100 @@ def test_links_open_through_qt(app, home, monkeypatch):
     w.copy_debug_info()
     from mecha_proxy import debuginfo
     assert opened == [gui.config.REPO_URL, debuginfo.ISSUE_URL]
+    w.close()
+
+
+def test_download_choices_window_and_tabs(app, home, monkeypatch):
+    from mecha_proxy import gui_choices
+    w = gui.MainWindow(str(home))
+    assert all(w.tabs.isTabVisible(i) for i in range(w.tabs.count()))  # everything until chosen otherwise
+    calls = []
+    monkeypatch.setattr(gui.service, "full_update",
+                        lambda cache, **k: calls.append(k) or ({}, [], []))
+
+    def choose(dlg):
+        assert dlg.paper == "letter" and dlg.types == gui_choices.KINDS   # defaults: everything
+        assert "about" in dlg.boxes["maps"].text()
+        dlg.paper_radios["a4"].setChecked(True)
+        dlg.boxes["tactics"].setChecked(False)
+        dlg.boxes["maps"].setChecked(False)
+        return gui.QDialog.Accepted
+    monkeypatch.setattr(gui_choices.DownloadChoicesDialog, "exec", choose)
+    w.run_update()
+    while w.task is not None:
+        w.task.wait(20000)
+        app.processEvents()
+    assert calls and calls[0]["types"] == ["unit", "other", "scenarios"] and calls[0]["paper"] == "a4"
+    assert w.prefs["download_types"] == ["unit", "other", "scenarios"] and w.prefs["paper"] == "a4"
+    tactics_i = list(w.card_tabs).index("tactics")
+    assert not w.tabs.isTabVisible(tactics_i) and not w.tabs.isTabVisible(w.maps_index)
+    assert w.tabs.isTabVisible(w.scen_index) and w.scen_panel.paper.currentData() == "a4"
+
+    # Cancel: nothing downloads, choices stay
+    calls.clear()
+    monkeypatch.setattr(gui_choices.DownloadChoicesDialog, "exec", lambda dlg: 0)
+    w.run_update()
+    assert not calls and w.prefs["download_types"] == ["unit", "other", "scenarios"]
+
+    # a deck list with cards of a turned-off type says so
+    info = []
+    monkeypatch.setattr(gui.QMessageBox, "information", lambda *a: info.append(a[2]))
+    tactic = w.card_tabs["tactics"].cards[0].code
+    w.apply_deck({tactic: 1})
+    assert info and "Tactics" in info[-1] and "turned off" in info[-1]
+    w.close()
+
+
+def test_maps_tab(app, home, monkeypatch, tmp_path):
+    from mecha_proxy import maps
+    from mecha_proxy.cache import Cache
+
+    from .test_maps import _site
+    from .test_scenarios import _Sess
+    routes = _site(tmp_path)
+    maps.update(Cache(home, session=_Sess(routes), delay_s=0, log=lambda *a: None), "letter", log=lambda *a: None)
+    opened = []
+    monkeypatch.setattr(gui, "open_in_file_manager", opened.append)
+    w = gui.MainWindow(str(home))
+    w.cache.session = _Sess(routes)
+    w.cache.delay_s = 0
+    assert w.tabs.tabText(w.maps_index) == "Maps (5)" and len(w.maps_tab.rows) == 5
+    w.tabs.setCurrentIndex(w.maps_index)
+    assert w.card_controls.isHidden()
+    w.open_map("Map")                                   # already downloaded: opens right away
+    assert opened and opened[-1].name == "261030_GASM_map_web_letter.pdf"
+    # switching paper here switches it everywhere; the A4 copy downloads when opened
+    w.maps_panel.paper.setCurrentIndex(w.maps_panel.paper.findData("a4"))
+    assert w.prefs["paper"] == "a4" and w.scen_panel.paper.currentData() == "a4"
+    assert "Not downloaded in A4" in w.maps_tab.rows[0].findChildren(gui.QLabel)[2].text()
+    w.open_map("Map")
+    while w.task is not None:
+        w.task.wait(20000)
+        app.processEvents()
+    app.processEvents()
+    assert opened[-1].name == "GASM_map_web_A4.pdf"
+    w.close()
+
+
+def test_map_previews_never_block_the_window(app, home, monkeypatch, tmp_path):
+    import threading
+
+    from mecha_proxy import maps
+    from mecha_proxy.cache import Cache
+
+    from .test_maps import _site
+    from .test_scenarios import _Sess
+    maps.update(Cache(home, session=_Sess(_site(tmp_path)), delay_s=0, log=lambda *a: None), "letter",
+                log=lambda *a: None)
+    threads = []
+    real = maps.thumbnail
+    monkeypatch.setattr(maps, "thumbnail", lambda *a, **k: threads.append(threading.current_thread()) or real(*a, **k))
+    w = gui.MainWindow(str(home))
+    assert "Making preview" in w.maps_tab.rows[0].findChildren(gui.QLabel)[0].text()
+    w._map_thumber.wait(60000)
+    app.processEvents()
+    app.processEvents()
+    assert threads and all(t is not threading.main_thread() for t in threads)
+    assert maps.thumb_ready(w.cache, maps.local_pdf(w.cache, "Map", "letter"))
+    assert w.maps_tab.rows[0].findChildren(gui.QLabel)[0].pixmap() is not None
     w.close()

@@ -19,7 +19,7 @@ from . import __version__, config
 ISSUE_URL = f"{config.REPO_URL}/issues/new?template=bug_report.yml"
 PREF_KEYS = ("paper", "mode", "flip", "bleed", "gap", "crop", "reverse", "small_pdf", "use_custom_back",
              "ai_enabled", "ai_preset", "ai_types", "ai_space_saving", "rules_layout", "rules_mode",
-             "scen_goal_cards", "auto_check")
+             "scen_goal_cards", "auto_check", "download_types")
 
 
 def _redact(text: str) -> str:
@@ -43,12 +43,13 @@ def _counts(cache) -> list[str]:
             lines.append(f"card list from: {manifest.get('updated_at') or manifest.get('built_at')}")
     except Exception as exc:  # noqa: BLE001
         lines.append(f"cards: unreadable ({type(exc).__name__})")
-    for label, module in (("scenarios", "scenarios"), ("rules", "rulesdocs")):
+    for label, module in (("scenarios", "scenarios"), ("rules", "rulesdocs"), ("maps", "maps")):
         try:
             mod = __import__(f"mecha_proxy.{module}", fromlist=["x"])
             listed = mod.saved_list(cache)
             files = mod.load_state(cache).get("files", {})
-            lines.append(f"{label}: {sum(d.available for d in listed)} listed, {len(files)} downloaded")
+            n = sum(getattr(d, "available", True) for d in listed)
+            lines.append(f"{label}: {n} listed, {len(files)} downloaded")
         except Exception as exc:  # noqa: BLE001
             lines.append(f"{label}: unreadable ({type(exc).__name__})")
     return lines

@@ -2,8 +2,8 @@
 
 Run weekly by .github/workflows/site-check.yml (and by hand with `mecha-proxy site-check`).
 It reads every card list page, a few card details, a few images, the scenario and rules lists
-(plus a peek at each PDF), and reports anything that no longer parses. Nothing is downloaded in
-bulk: ~30 requests total.
+and the maps page (plus a peek at each PDF), and reports anything that no longer parses. Nothing
+is downloaded in bulk: ~40 requests total.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, config, rulesdocs, scenarios, scraper
+from . import __version__, config, maps, rulesdocs, scenarios, scraper
 
 SAMPLES = 3          # card details / images checked per card type
 MAX_DROP = 0.20      # a count falling by more than this since last time is reported
@@ -157,6 +157,33 @@ def _check_rules(cache, result: Result, log) -> None:
             result.problems.append(f"rules {d.title}: link no longer points to a PDF ({d.url})")
 
 
+def _check_maps(cache, result: Result, log) -> None:
+    try:
+        listed = maps.fetch_list(cache)
+    except Exception as exc:  # noqa: BLE001
+        result.problems.append(f"maps: list page didn't load ({_short(exc)})")
+        return
+    if not listed:
+        result.problems.append("maps: list page has no maps - the page layout may have changed")
+        return
+    result.counts["maps"] = len(listed)
+    log(f"maps: {len(listed)} listed")
+    for m in listed:
+        missing = [config.paper_label(p) for p in config.PAPER_SIZES if p not in m.files]
+        if missing:
+            result.problems.append(f"map {m.title}: no {' or '.join(missing)} version found")
+        for f in m.files.values():
+            try:
+                status, _, head = _peek(cache, f.url)
+            except Exception as exc:  # noqa: BLE001
+                result.problems.append(f"map {m.title} ({f.paper}): PDF request failed ({_short(exc)})")
+                continue
+            if status >= 400:
+                result.problems.append(f"map {m.title} ({f.paper}): PDF returned HTTP {status} ({f.url})")
+            elif not head.startswith(b"%PDF"):
+                result.problems.append(f"map {m.title} ({f.paper}): link no longer points to a PDF ({f.url})")
+
+
 def _check_drops(result: Result) -> None:
     for key, before in sorted(result.baseline.items()):
         now = result.counts.get(key)
@@ -174,6 +201,7 @@ def run(cache, baseline: dict | None = None, log=print) -> Result:
         _check_cards(cache, ctype, result, log)
     _check_scenarios(cache, result, log)
     _check_rules(cache, result, log)
+    _check_maps(cache, result, log)
     _check_drops(result)
     return result
 

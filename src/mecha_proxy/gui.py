@@ -15,7 +15,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QImageReader, QKeySequence, QPalette, QPixmap
-from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame, QGridLayout,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
                                QProgressBar, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
                                QTabWidget, QVBoxLayout, QWidget)
@@ -24,6 +24,8 @@ from . import __version__, config, deckcode, enhance, filters, scenarios, scrape
 from .cache import atomic_write
 from .gui_ai import AiMixin
 from .gui_deck import PasteDeckDialog
+from .gui_choices import DownloadChoicesDialog, chosen_types
+from .gui_maps import MapsMixin
 from .gui_rules import RulesMixin
 from .gui_scen import ScenarioMixin
 from .print_dialog import PrintDialog, settings_from_prefs
@@ -50,7 +52,9 @@ DEFAULT_PREFS = {"mode": "duplex", "flip": "long", "bleed": 0.0, "gap": 0.0, "of
                  "scen_goal_cards": True,
                  "paper": "letter",
                  "rules_layout": "pages", "rules_mode": "duplex",
-                 "rules_reverse": False, "rules_guide": True}  # app update the user already opened (don't nag again)  # newest Bandai card change the user has already looked at
+                 "rules_reverse": False, "rules_guide": True,
+                 # what to download (Cards → Update cards asks every time; tabs follow it)
+                 "download_types": ["unit", "tactics", "other", "scenarios", "maps"]}  # app update the user already opened (don't nag again)  # newest Bandai card change the user has already looked at
 CHECK_INTERVAL_S = 24 * 3600   # look for new cards on the site at most once a day
 BANNER_BG, BANNER_FG = "#2C52B3", "#FFFFFF"
 
@@ -643,7 +647,7 @@ class CardTab(QWidget):
 
 
 # ---- main window ----------------------------------------------------------------
-class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
+class MainWindow(MapsMixin, RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
     def __init__(self, home: str | None = None):
         super().__init__()
         self.setWindowTitle(f"{APP_TITLE} {__version__}")
@@ -678,6 +682,7 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
         self._new_on_site: list[str] = []
         self._app_update: tuple[str, str] | None = None  # (version, release page) if newer exists
         self._new_scenarios: list[str] = []
+        self._new_maps: list[str] = []
         self._checker: Task | None = None
         body.addWidget(self._build_sidebar(), 0)
         self.tabs = QTabWidget()
@@ -687,6 +692,7 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
             tab.show_enhanced_toggled.connect(self._set_show_enhanced)
             tab.grid.compare_requested.connect(self.compare_card)
         self._build_scenarios()
+        self._build_maps()
         self.tabs.currentChanged.connect(self._tab_changed)
         body.addWidget(self.tabs, 1)
         self._build_menus()
@@ -861,7 +867,9 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
                                 "  –  click to open the download page")
             self.banner.show()
             return
-        missing = [c for c in self._all_cards() if self.images.get(c.code) is None]
+        wanted = chosen_types(self.prefs)
+        missing = [c for t, tab in self.card_tabs.items() if t in wanted for c in tab.cards
+                   if self.images.get(c.code) is None]
         parts = []
         if self._new_on_site:
             n = len(self._new_on_site)
@@ -871,6 +879,9 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
             n = len(self._new_scenarios)
             parts.append(f"{n} new scenario{'s' * (n != 1)} ({', '.join(t.title() for t in self._new_scenarios[:2])}"
                          f"{', …' if n > 2 else ''})")
+        if self._new_maps:
+            n = len(self._new_maps)
+            parts.append(f"{n} new map{'s' * (n != 1)} ({', '.join(self._new_maps[:2])}{', …' if n > 2 else ''})")
         if missing:
             n = len(missing)
             parts.append(f"{n} card{'s' * (n != 1)} not downloaded yet")
@@ -898,25 +909,35 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
             return
         manifest = self.cache.load_manifest()
         root = self.cache.root
+        wanted = chosen_types(self.prefs)
+        paper = self.prefs.get("paper", config.DEFAULT_PAPER)
 
         def work(task: Task):
+            from . import maps
             from .cache import Cache
             cache = Cache(root, log=lambda m: None)  # own session
             app_update = service.latest_release()   # never raises
+            new_scen, new_maps = [], []
             try:
-                new_scen = scenarios.new_on_site(cache)
+                if "scenarios" in wanted:
+                    new_scen = scenarios.new_on_site(cache)
             except Exception:  # noqa: BLE001 - optional
-                new_scen = []
+                pass
             try:
-                new = service.new_on_site(cache, manifest)
+                if "maps" in wanted:
+                    new_maps = maps.new_on_site(cache, paper)
+            except Exception:  # noqa: BLE001 - optional
+                pass
+            try:
+                new = service.new_on_site(cache, manifest, types=wanted)
             except Exception:  # noqa: BLE001 - still report an app update if the card site is down
                 if app_update is None:
                     raise
                 new = []
-            return new, app_update, new_scen
+            return new, app_update, new_scen, new_maps
 
         def done(result):
-            new, self._app_update, self._new_scenarios = result
+            new, self._app_update, self._new_scenarios, self._new_maps = result
             self._new_on_site = new
             self.prefs["last_check"] = time.time()
             self._save_prefs()
@@ -970,7 +991,7 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
 
     def _tab_changed(self, idx: int):
         self.filter_stack.setCurrentIndex(idx)
-        self.card_controls.setVisible(idx != getattr(self, "scen_index", -1))
+        self.card_controls.setVisible(idx not in (getattr(self, "scen_index", -1), getattr(self, "maps_index", -1)))
         HoverPreview.get().hide()
         self._update_summary()
 
@@ -1007,6 +1028,14 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
 
     def apply_deck(self, cards: dict[str, int]):
         """Replace the selection on every tab with {code: copies}."""
+        wanted = chosen_types(self.prefs)
+        hidden = sorted({config.CARD_TYPES[t].label for t, tab in self.card_tabs.items() if t not in wanted
+                         for c in tab.cards if cards.get(c.code)})
+        if hidden:
+            QMessageBox.information(
+                self, APP_TITLE, f"This list includes {' and '.join(hidden)}, which you've turned off. Those cards "
+                "are selected but their tab is hidden: turn them on in Cards → Update cards to see and "
+                "print them.")
         for tab in self.card_tabs.values():
             for t in tab.grid.tiles:
                 q = cards.get(t.card.code)
@@ -1026,8 +1055,6 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
 
     def _update_summary(self, *_):
         t = self.current_type
-        ct = config.CARD_TYPES[t]
-        self.act_cal.setText(f"&Calibration sheet ({ct.label.lower()})…")
         lines, total = [], 0
         for kind in self.card_tabs:
             sel = self._selection(kind)
@@ -1081,6 +1108,8 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
         self.cache.save_index()
         self.refresh_enhanced()
         self.reload_scenarios()
+        self.reload_maps()
+        self.apply_tab_visibility()
         self._update_summary()
         self.refresh_banner()
 
@@ -1128,10 +1157,7 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
             return
         if self.cache.load_manifest():
             return
-        r = QMessageBox.question(self, APP_TITLE, "No cards downloaded yet.\n\n"
-                                 "Download the card list, card details and images now? (about 5 MB)")
-        if r == QMessageBox.Yes:
-            self.run_update()
+        self.run_update(first_run=True)
 
     # -- tasks --
     def _start(self, fn, on_done, label: str, cancellable: bool = False):
@@ -1208,17 +1234,75 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
         if nxt:
             QTimer.singleShot(0, nxt)
 
-    def run_update(self):
+    def _download_hints(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Text next to each box in the download window: card counts, scenario count, map sizes."""
+        from . import maps
+        manifest = self.cache.load_manifest() or {}
+        hints = {}
+        for t in config.CARD_TYPES:
+            n = len(manifest.get("cards", {}).get(t, []))
+            if n:
+                hints[t] = f"{n} cards"
+        n = sum(s.available for s in scenarios.saved_list(self.cache))
+        hints["scenarios"] = f"{n} PDFs, a few MB each" if n else "a few MB each"
+        listed = maps.saved_list(self.cache)
+        map_sizes = {}
+        for paper in config.PAPER_SIZES:
+            mb = maps.total_mb(listed, paper)
+            map_sizes[paper] = f"about {mb} MB" if mb else "about 40 MB"
+        if not manifest:
+            hints.setdefault("unit", "card images: about 5 MB for all cards")
+        return hints, map_sizes
+
+    def ask_download_choices(self, first_run: bool = False) -> bool:
+        """The download window. Saves the choices and updates the tabs; False if cancelled."""
+        hints, map_sizes = self._download_hints()
+        dlg = DownloadChoicesDialog(self, self.prefs, hints, map_sizes, first_run=first_run)
+        if dlg.exec() != QDialog.Accepted:
+            return False
+        self.prefs["paper"] = dlg.paper
+        self.prefs["download_types"] = dlg.types
+        self._save_prefs()
+        if hasattr(self, "_scen_sync_paper"):
+            self._scen_sync_paper()
+        self.apply_tab_visibility()
+        return True
+
+    def apply_tab_visibility(self):
+        """Tabs only for what the user chose to download (files of unticked kinds are kept)."""
+        wanted = chosen_types(self.prefs)
+        index = {t: i for i, t in enumerate(self.card_tabs)}
+        index["scenarios"] = getattr(self, "scen_index", -1)
+        index["maps"] = getattr(self, "maps_index", -1)
+        for kind, i in index.items():
+            if i >= 0:
+                self.tabs.setTabVisible(i, kind in wanted)
+        if not self.tabs.isTabVisible(self.tabs.currentIndex()):
+            first = next((i for i in range(self.tabs.count()) if self.tabs.isTabVisible(i)), None)
+            if first is not None:
+                self.tabs.setCurrentIndex(first)
+        self._maps_sync_paper()
+
+    def run_update(self, ask: bool = True, first_run: bool = False):
+        if ask and not self.SMOKE_TEST and not self.ask_download_choices(first_run=first_run):
+            return
         if self._checker is not None:  # let a background check finish first (it shares nothing, but
             self._checker.wait(15000)  # its result would be stale once the update runs)
         self.banner.hide()
         cache = self.cache
+        types = chosen_types(self.prefs)
+        paper = self.prefs.get("paper", config.DEFAULT_PAPER)
 
         def work(task: Task):
             task.log("Downloading card lists and every card's details…")
             cache.stats = dict.fromkeys(cache.stats, 0)
             _, missing, changed = service.full_update(cache, log=task.log, on_step=task.step,
-                                                      should_stop=lambda: task.cancelled)
+                                                      should_stop=lambda: task.cancelled, types=types,
+                                                      paper=paper)
+            if "maps" in types and not task.cancelled:  # previews now, off the UI thread
+                from . import maps
+                task.log("Making map previews…")
+                maps.make_missing_thumbs(cache, paper, should_stop=lambda: task.cancelled)
             return dict(cache.stats), missing, task.cancelled, changed
 
         def done(result):
@@ -1226,6 +1310,7 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
             if not cancelled:
                 self._new_on_site = []  # the update just pulled the full lists
                 self._new_scenarios = []
+                self._new_maps = []
                 self._after_task = self.auto_enhance_new
             self.reload_cards()
             msg = (f"{'Stopped. ' if cancelled else ''}{stats['downloaded']} downloaded, "
@@ -1263,7 +1348,7 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
 
     def _calibration_from(self, dlg: PrintDialog):
         self.prefs.update(dlg.result_prefs())
-        self.run_calibration(card_type=dlg.which.currentData() or self.current_type, parent=dlg)
+        self.run_calibration(parent=dlg)
 
     def run_build(self, selections: dict[str, list] | None = None):
         selections = selections or {t: sel for t in self.card_tabs if (sel := self._selection(t))}
@@ -1308,10 +1393,10 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
         self.cache.save_index()
         self.refresh_banner()
 
-    def run_calibration(self, card_type: str | None = None, parent=None):
-        s = self.settings(card_type)
-        default = service.default_output(self.cache.root / "output", [s.card_type],
-                                         suffix=f"calibration_{service.TYPE_LABEL.get(s.card_type, s.card_type)}")
+    def run_calibration(self, parent=None):
+        """One sheet for every card size: a unit card and two tactics-size cards, front and back."""
+        s = self.settings()
+        default = service.default_output(self.cache.root / "output", [], suffix="calibration")
         out = self._ask_output("Save calibration sheet", default)
         if not out:
             return
@@ -1324,7 +1409,8 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
         if missing:
             lines.append("Skipped (no image): " + ", ".join(missing))
         if calibration:
-            lines.append("Print it the same way you'll print cards, then hold it up to a light.")
+            lines.append("Print it the same way you'll print cards. Check the 100 mm bar with a ruler, then hold "
+                         "the sheet up to a light: the outlines and numbers on both sides should line up.")
         elif s.mode == "split":
             lines.append("Print the fronts file, put the stack back in flipped, then print the backs file.\n"
                          "Or print each on its own sheet and glue them back to back.")
@@ -1345,6 +1431,10 @@ class MainWindow(RulesMixin, ScenarioMixin, AiMixin, QMainWindow):
             self.task.wait(30000 if self._ai_task else 5000)  # an AI pass finishes its current card
         if self._checker:
             self._checker.wait(5000)
+        thumber = getattr(self, "_map_thumber", None)
+        if thumber is not None:
+            thumber.cancel()
+            thumber.wait(10000)
         self._save_prefs()
         super().closeEvent(e)
 

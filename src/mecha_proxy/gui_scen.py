@@ -205,11 +205,17 @@ class ScenarioMixin:
         combo.setCurrentIndex(max(combo.findData(self.prefs.get("paper", config.DEFAULT_PAPER)), 0))
         combo.blockSignals(False)
         self._scen_summary()
+        if hasattr(self, "maps_panel"):  # the Maps tab shows the same shared paper choice
+            self._maps_sync_paper()
+            self.reload_maps()
 
     def _scen_paper_changed(self, _=None):
         self.prefs["paper"] = self.scen_panel.paper.currentData()
         self._save_prefs()
         self._scen_summary()
+        if hasattr(self, "maps_panel"):
+            self._maps_sync_paper()
+            self.reload_maps()
         if hasattr(self, "_update_summary"):
             self._update_summary()
 

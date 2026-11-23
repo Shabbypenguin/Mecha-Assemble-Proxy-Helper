@@ -72,11 +72,11 @@ def test_scenarios_on_a4_are_bigger(tmp_path):
 
 def test_cli_paper_option(tmp_path, capsys):
     out = tmp_path / "cal.pdf"
-    assert cli.main(["--home", str(tmp_path / "home"), "calibrate", "--type", "unit", "--paper", "a4",
+    assert cli.main(["--home", str(tmp_path / "home"), "calibrate", "--paper", "a4",
                      "-o", str(out)]) == 0
     assert _size_pt(out) == A4_PT
     with pytest.raises(SystemExit):
-        cli.main(["calibrate", "--type", "unit", "--paper", "legal"])
+        cli.main(["calibrate", "--paper", "legal"])
 
 
 def test_a4_grid_fits_inside_margins():

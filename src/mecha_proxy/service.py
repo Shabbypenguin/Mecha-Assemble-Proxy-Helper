@@ -46,14 +46,25 @@ def refresh_manifest(cache: Cache, types: list[str], log: LogFn = print,
     return manifest
 
 
+ALL_KINDS = [*config.CARD_TYPES, "scenarios", "maps"]
+
+
 def full_update(cache: Cache, log: LogFn = print, on_step: StepFn | None = None,
-                should_stop: Callable[[], bool] | None = None) -> tuple[dict, list[str], list[str]]:
+                should_stop: Callable[[], bool] | None = None, types: list[str] | None = None,
+                paper: str = config.DEFAULT_PAPER) -> tuple[dict, list[str], list[str]]:
     """Menu "Update cards": re-read lists and every card's details, then download new images and
     re-check the images of cards whose details changed (errata). Returns (manifest, missing labels,
-    changed codes)."""
+    changed codes).
+
+    types: what the user chose to download (card types, "scenarios", "maps"; default everything).
+    Card lists and details are always refreshed for every type – they're small, and filters, deck
+    lists and change tracking need them – only images, scenario and map PDFs follow the choice.
+    Maps are downloaded in the given paper size.
+    """
+    types = list(ALL_KINDS) if types is None else list(types)
     manifest = refresh_manifest(cache, list(config.CARD_TYPES), log=log, on_step=on_step, refresh=True)
     changed = set(manifest.get("last_changed", []))
-    cards = [c for t in config.CARD_TYPES for c in scraper.cards_from_manifest(manifest, t)]
+    cards = [c for t in config.CARD_TYPES if t in types for c in scraper.cards_from_manifest(manifest, t)]
     _, missing = fetch_images(cache, [c for c in cards if c.code not in changed], offline=False,
                               on_step=on_step, should_stop=should_stop)
     if changed and not (should_stop and should_stop()):
@@ -62,10 +73,19 @@ def full_update(cache: Cache, log: LogFn = print, on_step: StepFn | None = None,
         missing += more
     if not (should_stop and should_stop()):
         from . import scenarios
-        try:  # scenarios are extra: a problem there mustn't spoil the card update
-            scenarios.update(cache, log=log, on_step=on_step, should_stop=should_stop)
+        if "scenarios" in types:
+            try:  # scenarios are extra: a problem there mustn't spoil the card update
+                scenarios.update(cache, log=log, on_step=on_step, should_stop=should_stop)
+            except Exception as exc:  # noqa: BLE001
+                log(f"warning: couldn't update scenarios ({exc})")
+        from . import maps
+        try:  # the list always (for the Maps tab), the PDFs only if chosen
+            if "maps" in types and not (should_stop and should_stop()):
+                maps.update(cache, paper, log=log, on_step=on_step, should_stop=should_stop)
+            else:
+                maps.refresh_list(cache)
         except Exception as exc:  # noqa: BLE001
-            log(f"warning: couldn't update scenarios ({exc})")
+            log(f"warning: couldn't update maps ({exc})")
         from . import rulesdocs
         try:  # just the list for the Rules menu; documents download when picked
             rulesdocs.refresh_list(cache)
@@ -110,14 +130,17 @@ def missing_images(cache: Cache, manifest: dict | None) -> list[scraper.Card]:
     return out
 
 
-def new_on_site(cache: Cache, manifest: dict | None, log: LogFn = lambda m: None) -> list[str]:
-    """Card codes listed on the site that the saved list doesn't have yet.
+def new_on_site(cache: Cache, manifest: dict | None, log: LogFn = lambda m: None,
+                types: list[str] | None = None) -> list[str]:
+    """Card codes listed on the site that the saved list doesn't have yet (only the given types).
 
     Reads only the list pages (a handful of requests); nothing is saved or downloaded.
     """
     known = {c["code"] for cards in (manifest or {}).get("cards", {}).values() for c in cards}
     new = []
     for ctype in config.CARD_TYPES.values():
+        if types is not None and ctype.key not in types:
+            continue
         try:
             listed = scraper.scrape_type(cache, ctype, log=log)
         except RuntimeError:  # an empty list page (e.g. no token cards yet) isn't an error here
@@ -341,6 +364,6 @@ def output_paths(base: Path, types: list[str]) -> dict[str, Path]:
 
 
 def make_calibration(s: PrintSettings, out: Path) -> Path:
-    w, h = s.card_size
-    return pdf.build_calibration(w, h, Path(out), bleed=s.bleed, gap=s.gap, margin=s.margin, flip=s.flip,
+    """The one calibration sheet (a unit card and two tactics-size cards), with the print settings."""
+    return pdf.build_calibration(Path(out), bleed=s.bleed, gap=s.gap, margin=s.margin, flip=s.flip,
                                  back_offset=s.back_offset, paper=s.page_mm)

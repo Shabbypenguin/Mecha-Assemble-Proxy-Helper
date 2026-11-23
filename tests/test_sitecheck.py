@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mecha_proxy import cli, config, rulesdocs, scenarios, scraper, sitecheck
+from mecha_proxy import cli, config, maps, rulesdocs, scenarios, scraper, sitecheck
 from mecha_proxy.cache import Cache
 
 FIX = Path(__file__).parent / "fixtures"
@@ -78,6 +78,11 @@ def _site() -> dict:
     for d in rulesdocs.parse_list(rules):
         if d.available:
             routes[d.url] = (PDF, "application/pdf")
+    page = (FIX / "maps_list.html").read_text()
+    routes[BASE + maps.LIST_PATH] = page
+    for m in maps.parse_list(page):
+        for f in m.files.values():
+            routes[f.url] = (PDF, "application/pdf")
     return routes
 
 
@@ -93,10 +98,10 @@ def test_healthy_site_passes(tmp_path):
     cache = _cache(tmp_path, _site())
     r = sitecheck.run(cache, log=_quiet)
     assert r.ok, r.problems
-    assert r.counts == {"unit": 3, "tactics": 3, "other": 1, "scenarios": 3, "rules": 2}
+    assert r.counts == {"unit": 3, "tactics": 3, "other": 1, "scenarios": 3, "rules": 2, "maps": 5}
     assert "site-check:ok" in sitecheck.report(r)
     # light on Bandai: list pages, a few details/images per type, the scenario list and its PDFs
-    assert len(cache.session.calls) <= 30
+    assert len(cache.session.calls) <= 45
 
 
 def test_samples_spread_first_middle_last():

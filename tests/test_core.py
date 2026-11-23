@@ -187,8 +187,24 @@ def test_back_render_size():
 
 
 def test_calibration(tmp_path):
-    out = pdf.build_calibration(63, 88, tmp_path / "new" / "dir" / "cal.pdf", flip="short")
+    out = pdf.build_calibration(tmp_path / "new" / "dir" / "cal.pdf", flip="short")
     assert _pages(out) == 2
+    from pypdf import PdfReader
+    front, back = (p.extract_text() for p in PdfReader(str(out)).pages)
+    assert "unit card" in front and "148.5 x 105.25 mm" in front and front.count("tactics / token") == 2
+    assert "100 mm" in front and "100 mm" not in back and "flip on short edge" in back
+
+
+@pytest.mark.parametrize("paper", [config.LETTER_MM, config.A4_MM])
+def test_calibration_layout_fits_one_unit_and_two_tactics(paper):
+    cards = pdf.calibration_layout(paper)
+    assert [c[0] for c in cards] == ["1", "2", "3"]
+    (_, ux, uy, uw, uh), (_, ax, ay, tw, th), (_, bx, by, _, _) = cards
+    assert (uw, uh) == config.CARD_TYPES["unit"].size_mm and (tw, th) == config.CARD_TYPES["tactics"].size_mm
+    assert config.CARD_TYPES["other"].size_mm in ((tw, th), (th, tw))   # tokens: tactics size
+    assert ay + th + 8 <= uy + 1e-9 and ay == by and bx >= ax + tw + 8 - 1e-9   # no overlaps
+    for _, x, y, w, h in cards:                                        # inside the printable area
+        assert 5 <= x and x + w <= paper[0] - 5 and 5 <= y and y + h <= paper[1] - 5
 
 
 # ---- sorted cache layout --------------------------------------------------------

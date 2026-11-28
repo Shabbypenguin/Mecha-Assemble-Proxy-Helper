@@ -156,3 +156,44 @@ def test_preview_shrinks_huge_photos(tmp_path, monkeypatch):
     assert M.thumbnail(src, tmp_path / "t.png", width=200)
     small = make_map(tmp_path / "small.pdf")
     assert M._preview_pdf(small) == str(small)            # nothing big: render the original
+
+
+def test_2026_11_layout():
+    """Bandai's redesigned page: <li data-category> entries; tokens, terrain and promo cards skipped."""
+    listed = M.parse_list((FIX / "maps_list_2026_11.html").read_text())
+    assert [m.title for m in listed] == ["[DX01] SAMPLE TWO", "[ST01] SAMPLE ONE", "SAMPLE ONE"]
+    assert all(set(m.files) == {"a4", "letter"} for m in listed)
+    two = listed[0]
+    assert two.display == "Sample Two [DX01]" and two.file("a4").size == "7.59MB"
+    assert two.file("letter").updated == "2026.11.20"
+    assert listed[2].display == "Sample One" and listed[2].file("letter").filename == "261030_GASM_map_web_letter.pdf"
+
+
+def test_page_redesign_never_wipes_the_list(tmp_path):
+    routes = _site(tmp_path)
+    cache = _cache(tmp_path, routes)
+    M.update(cache, "letter", log=_quiet)
+    before = [m.title for m in M.saved_list(cache)]
+    cache.session = _Sess({LIST_URL: "<html><body>all new</body></html>"})
+    with pytest.raises(M.LayoutChanged):
+        M.update(cache, "letter", log=_quiet)
+    with pytest.raises(M.LayoutChanged):
+        M.refresh_list(cache)
+    assert [m.title for m in M.saved_list(cache)] == before
+    path, note = M.get(cache, "Map", "letter", log=_quiet)       # still opens the saved copy
+    assert path.is_file() and "changed" in note
+
+
+def test_renamed_entry_keeps_the_downloaded_file(tmp_path):
+    routes = _site(tmp_path)
+    cache = _cache(tmp_path, routes)
+    M.update(cache, "letter", log=_quiet)
+    renamed = (FIX / "maps_list.html").read_text().replace(
+        "MAP                                                  <span class=\"c-dlBtn__listAttention\">Print on letter",
+        "<span class=\"pg-enrichgameplay__subTtl\">GENERAL RENAMED</span> MAP <span class=\"c-dlBtn__listAttention\">Print on letter", 1)
+    assert "GENERAL RENAMED" in renamed
+    cache.session = sess = _Sess(_site(tmp_path, renamed))
+    _, changed = M.update(cache, "letter", log=_quiet)
+    assert "GENERAL RENAMED" not in changed                       # same file: not downloaded again
+    assert M.local_pdf(cache, "GENERAL RENAMED", "letter").name == "261030_GASM_map_web_letter.pdf"
+    assert not any("261030" in c for c in sess.calls)

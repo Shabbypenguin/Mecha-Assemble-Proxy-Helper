@@ -12,6 +12,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urljoin
 
 from . import __version__, config, maps, rulesdocs, scenarios, scraper
 
@@ -111,7 +112,7 @@ def _check_cards(cache, ctype: config.CardType, result: Result, log) -> None:
 
 def _check_scenarios(cache, result: Result, log) -> None:
     try:
-        scs = scenarios.fetch_list(cache)
+        scs = scenarios.parse_list(cache.get_text(urljoin(config.SITE_BASE, scenarios.LIST_PATH)))
     except Exception as exc:  # noqa: BLE001
         result.problems.append(f"scenarios: list page didn't load ({_short(exc)})")
         return
@@ -135,7 +136,7 @@ def _check_scenarios(cache, result: Result, log) -> None:
 
 def _check_rules(cache, result: Result, log) -> None:
     try:
-        docs = rulesdocs.fetch_list(cache)
+        docs = rulesdocs.parse_list(cache.get_text(urljoin(config.SITE_BASE, rulesdocs.LIST_PATH)))
     except Exception as exc:  # noqa: BLE001
         result.problems.append(f"rules: list page didn't load ({_short(exc)})")
         return
@@ -159,7 +160,7 @@ def _check_rules(cache, result: Result, log) -> None:
 
 def _check_maps(cache, result: Result, log) -> None:
     try:
-        listed = maps.fetch_list(cache)
+        listed = maps.parse_list(cache.get_text(urljoin(config.SITE_BASE, maps.LIST_PATH)))
     except Exception as exc:  # noqa: BLE001
         result.problems.append(f"maps: list page didn't load ({_short(exc)})")
         return

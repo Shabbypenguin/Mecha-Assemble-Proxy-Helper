@@ -41,7 +41,12 @@ def parse_list(html: str) -> list[Scenario]:
 
 
 def fetch_list(cache) -> list[Scenario]:
-    return parse_list(cache.get_text(urljoin(config.SITE_BASE, LIST_PATH)))
+    """Documents on Bandai's Rules page. Raises rather than returning nothing, so a page redesign
+    can never empty the Rules menu – the last good list is kept."""
+    found = parse_list(cache.get_text(urljoin(config.SITE_BASE, LIST_PATH)))
+    if not found:
+        raise scenarios.LayoutChanged("no documents found on Bandai's Rules page - its layout may have changed")
+    return found
 
 
 def folder(cache) -> Path:

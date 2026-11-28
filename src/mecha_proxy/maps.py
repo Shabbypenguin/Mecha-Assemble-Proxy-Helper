@@ -23,7 +23,7 @@ from urllib.parse import unquote, urljoin, urlparse
 
 from . import config
 from .cache import atomic_write
-from .scenarios import is_pdf
+from .scenarios import LayoutChanged, is_pdf
 
 LIST_PATH = "data/enrich-gameplay/"
 GENERAL_TITLE = "Map"          # the entry with no scenario name above it
@@ -64,7 +64,19 @@ class Map:
 
 # ---- reading the page ------------------------------------------------------------------------
 class _Parser(HTMLParser):
-    """<a class="c-dlBtn__listLink" href> … subTtl (map name) … MAP … listAttention … Last Updated … size."""
+    """Download entries on the Enrich gameplay page, in either layout Bandai has used.
+
+    2026-11 layout: <li data-category="map"><a href> … pg-enrichgameplay__category (MAP) …
+                    __set (map name) … __care (paper note) … __date … __volume
+    2026-10 layout: <a class="c-dlBtn__listLink" href> … __subTtl (map name) … MAP … listAttention
+                    … listsupplementLastupTxt … listsupplementSizeTxt
+    """
+    FIELDS = {"pg-enrichgameplay__subTtl": "name", "pg-enrichgameplay__set": "name",
+              "pg-enrichgameplay__mainTtl": "title", "pg-enrichgameplay__category": "title",
+              "c-dlBtn__listAttention": "note", "pg-enrichgameplay__care": "note",
+              "c-dlBtn__listsupplementLastupTxt": "updated", "pg-enrichgameplay__date": "updated",
+              "c-dlBtn__listsupplementSizeTxt": "size", "pg-enrichgameplay__volume": "size"}
+    VOID = {"br", "img", "source", "input", "meta", "link", "hr"}
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -73,36 +85,33 @@ class _Parser(HTMLParser):
         self._depth = 0
         self._field: str | None = None
         self._stack: list[str | None] = []
+        self._category: str | None = None   # data-category of the enclosing <li>
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         cls = (a.get("class") or "").split()
-        if tag == "a" and "c-dlBtn__listLink" in cls:
-            self._cur = {"href": a.get("href"), "name": [], "title": [], "note": [], "updated": [], "size": []}
+        if tag == "li" and self._cur is None:
+            self._category = (a.get("data-category") or "").strip().lower() or None
+        if tag == "a" and self._cur is None and a.get("href") and (
+                "c-dlBtn__listLink" in cls or self._category is not None):
+            self._cur = {"href": a.get("href"), "category": self._category, "name": [], "title": [], "note": [],
+                         "updated": [], "size": []}
             self._depth, self._field, self._stack = 1, None, []
             return
         if self._cur is None:
             return
         if tag == "a":
             self._depth += 1
-        field = None
-        if "pg-enrichgameplay__subTtl" in cls:
-            field = "name"
-        elif "c-dlBtn__listAttention" in cls:
-            field = "note"
-        elif "pg-enrichgameplay__mainTtl" in cls:
-            field = "title"
-        elif "c-dlBtn__listsupplementLastupTxt" in cls:
-            field = "updated"
-        elif "c-dlBtn__listsupplementSizeTxt" in cls:
-            field = "size"
-        if tag not in ("br", "img"):
+        field = next((self.FIELDS[c] for c in cls if c in self.FIELDS), None)
+        if tag not in self.VOID:
             self._stack.append(self._field)
             if field:
                 self._field = field
 
     def handle_endtag(self, tag):
         if self._cur is None:
+            if tag == "li":
+                self._category = None
             return
         if tag == "a":
             self._depth -= 1
@@ -110,7 +119,7 @@ class _Parser(HTMLParser):
                 self.items.append(self._cur)
                 self._cur, self._field = None, None
             return
-        if tag not in ("br", "img") and self._stack:
+        if tag not in self.VOID and self._stack:
             self._field = self._stack.pop()
 
     def handle_data(self, data):
@@ -138,8 +147,9 @@ def parse_list(html: str, base: str = config.SITE_BASE) -> list[Map]:
         url = urljoin(base, href) if href else ""
         if not url.lower().split("?")[0].endswith(".pdf"):
             continue  # zips (3D-printer files) and anything else that isn't a printable map
-        if "MAP" not in " ".join(it["title"]).upper().split():
-            continue
+        is_map = it.get("category") == "map" or "MAP" in " ".join(it["title"]).upper().split()
+        if not is_map:
+            continue  # terrain, tokens, promotion cards, …
         paper = _paper_of(" ".join(it["note"]), url)
         if paper is None:
             continue
@@ -150,8 +160,15 @@ def parse_list(html: str, base: str = config.SITE_BASE) -> list[Map]:
     return list(maps.values())
 
 
+
+
 def fetch_list(cache) -> list[Map]:
-    return parse_list(cache.get_text(urljoin(config.SITE_BASE, LIST_PATH)))
+    """The maps on Bandai's page. Raises LayoutChanged rather than returning nothing, so a page
+    redesign can never wipe the saved list (or the Maps tab) – the last good list is kept."""
+    maps = parse_list(cache.get_text(urljoin(config.SITE_BASE, LIST_PATH)))
+    if not maps:
+        raise LayoutChanged("no maps found on Bandai's Enrich gameplay page - its layout may have changed")
+    return maps
 
 
 # ---- local copies ----------------------------------------------------------------------------
@@ -214,6 +231,12 @@ def _download(cache, f: MapFile, state: dict) -> str:
     """Fetch one map file if it's new or changed. Returns "up to date" / "downloaded" / "updated"."""
     files = state.setdefault("files", {})
     info = files.get(_key(f.title, f.paper))
+    if info is None:  # Bandai renamed the entry (e.g. "Map" -> "SLEEPING LEVIATHAN"): same file, keep it
+        same = next((v for v in files.values() if v.get("url") == f.url and v.get("updated") == f.updated
+                     and (folder(cache) / v["file"]).is_file()), None)
+        if same is not None:
+            files[_key(f.title, f.paper)] = dict(same)
+            return "up to date"
     have = info and (folder(cache) / info["file"]).is_file()
     if have and info.get("url") == f.url and info.get("updated") == f.updated:
         return "up to date"
@@ -259,10 +282,12 @@ def get(cache, title: str, paper: str, log=print) -> tuple[Path, str]:
     """The newest copy of one map in one paper size (for opening a map in the other size)."""
     try:
         maps = refresh_list(cache)
-    except Exception as exc:  # noqa: BLE001 - offline: fall back to what we have
+    except Exception as exc:  # noqa: BLE001 - offline or page changed: fall back to what we have
         have = local_pdf(cache, title, paper)
         if have:
-            return have, "Couldn't reach Bandai's site, so this is the copy downloaded earlier."
+            why = ("Bandai's maps page has changed and couldn't be read"
+                   if isinstance(exc, LayoutChanged) else "Couldn't reach Bandai's site")
+            return have, f"{why}, so this is the copy downloaded earlier."
         raise RuntimeError(f"couldn't reach Bandai's site to download this map ({exc})") from exc
     m = next((x for x in maps if x.title == title), None)
     f = m.file(paper) if m else None

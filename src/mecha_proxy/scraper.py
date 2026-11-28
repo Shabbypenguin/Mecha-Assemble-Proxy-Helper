@@ -154,6 +154,8 @@ FIELD_LABELS = {"hp": "HP", "vp": "VP", "tl": "TL", "signature": "signature", "t
 # If more than this share of known cards "change" in one update, the site layout most likely
 # changed (our reader got different text, not Bandai): keep the old details, flag nothing.
 MAX_CHANGE_SHARE = 0.5
+MAX_SHRINK = 0.2            # a card list shrinking by more than this keeps the saved cards
+MIN_FOR_SHRINK_CHECK = 5
 
 
 def changed_fields(old: dict, new: dict) -> list[str]:
@@ -169,6 +171,7 @@ def build_manifest(cache, types: list[str], log=print, details: bool = True,
     on_step(label, status, done, total) reports detail fetching progress.
     """
     manifest = cache.load_manifest() or {"cards": {}}
+    manifest.pop("kept_previous", None)
     changes = manifest.setdefault("changes", {})
     pending: dict[str, tuple[Card, dict, list[str]]] = {}  # code -> (card, old details, fields)
     rechecked = 0
@@ -176,8 +179,18 @@ def build_manifest(cache, types: list[str], log=print, details: bool = True,
         ctype = config.CARD_TYPES[key]
         known = {c["code"]: c.get("details") or {} for c in manifest["cards"].get(key, [])}
         cards = scrape_type(cache, ctype, log=log)
+        previous = manifest["cards"].get(key, [])
+        if len(previous) >= MIN_FOR_SHRINK_CHECK and len(cards) < (1 - MAX_SHRINK) * len(previous):
+            # part of the list is probably no longer being read (e.g. a page went missing): never
+            # let that make cards disappear – keep the ones we had, add any new ones
+            found = {c.code for c in cards}
+            kept = [Card(**d) for d in previous if d["code"] not in found]
+            log(f"warning: {ctype.label} list shows {len(cards)} cards but {len(previous)} were saved – "
+                f"the page may have changed, so the {len(kept)} missing card(s) were kept")
+            manifest.setdefault("kept_previous", []).append(key)
+            cards = sorted(cards + kept, key=lambda c: c.code)
         for c in cards:
-            c.details = known.get(c.code, {})
+            c.details = c.details or known.get(c.code, {})
         if details:
             todo = [c for c in cards if refresh_details or not c.details]
             for i, c in enumerate(todo, 1):

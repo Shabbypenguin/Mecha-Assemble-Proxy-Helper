@@ -145,8 +145,17 @@ def parse_list(html: str, base: str = config.SITE_BASE) -> list[Scenario]:
     return out
 
 
+class LayoutChanged(RuntimeError):
+    """A Bandai page loaded but nothing could be read from it."""
+
+
 def fetch_list(cache) -> list[Scenario]:
-    return parse_list(cache.get_text(urljoin(config.SITE_BASE, LIST_PATH)))
+    """Scenarios on Bandai's page. Raises LayoutChanged rather than returning nothing, so a page
+    redesign can never wipe the saved list (or the Scenarios tab) – the last good list is kept."""
+    found = parse_list(cache.get_text(urljoin(config.SITE_BASE, LIST_PATH)))
+    if not found:
+        raise LayoutChanged("no scenarios found on Bandai's scenario page - its layout may have changed")
+    return found
 
 
 # ---- local copies -----------------------------------------------------------------------------
